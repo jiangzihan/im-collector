@@ -1,0 +1,18 @@
+[package]
+name = "imc-common"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "imc_common"
+path = "src/lib.rs"
+
+[dependencies]
+aes = "0.8"
+hmac = "0.12"
+sha2 = "0.10"
+pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
+hex = "0.4"
+md-5 = "0.10"
+zstd = "0.13"
+rusqlite = { version = "0.32", features = ["bundled"] }

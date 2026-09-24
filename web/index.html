@@ -1,0 +1,57 @@
+<!doctype html><html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>IM 消息实时查看</title>
+<style>
+:root{--bg:#0f1115;--card:#1a1d24;--line:#2a2f3a;--fg:#e6e8ec;--mut:#8a92a3;--acc:#4c8bf5;--me:#123a2a}
+*{box-sizing:border-box}body{margin:0;font:14px/1.5 system-ui,"Microsoft YaHei",sans-serif;background:var(--bg);color:var(--fg)}
+header{display:flex;gap:8px;align-items:center;padding:10px 14px;background:var(--card);border-bottom:1px solid var(--line);position:sticky;top:0;flex-wrap:wrap}
+select,input,button{background:#0f1115;color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:7px 10px;font-size:13px}
+button{cursor:pointer;background:var(--acc);border:none;color:#fff}button.ghost{background:#232733;color:var(--fg)}
+#wrap{display:flex;height:calc(100vh - 53px)}
+#chats{width:280px;border-right:1px solid var(--line);overflow:auto;flex:none}
+#chats .c{padding:9px 12px;border-bottom:1px solid var(--line);cursor:pointer}#chats .c:hover{background:#20242d}#chats .c.on{background:#26304a}
+#chats .n{font-weight:600}.sub{color:var(--mut);font-size:12px}
+#msgs{flex:1;overflow:auto;padding:12px 16px}
+.m{padding:6px 0;border-bottom:1px dashed #222833}.m .t{color:var(--mut);font-size:12px;margin-right:8px}
+.m .who{color:var(--acc);font-weight:600;margin-right:6px}.m .ty{color:var(--mut);font-size:12px}
+.badge{font-size:11px;padding:1px 6px;border-radius:6px;background:#232733;color:var(--mut);margin-left:6px}
+.right{margin-left:auto;color:var(--mut);font-size:12px}
+</style></head><body>
+<header>
+  <b>IM 实时</b>
+  <select id="im"></select>
+  <input id="q" placeholder="搜索内容…" size="16">
+  <button id="go" class="ghost">查询</button>
+  <button id="collect">立即采集</button>
+  <label class="sub"><input type="checkbox" id="auto" checked> 自动刷新</label>
+  <select id="iv" class="ghost"><option value="3">3s</option><option value="5" selected>5s</option><option value="10">10s</option></select>
+  <span class="right" id="stat"></span>
+</header>
+<div id="wrap">
+  <div id="chats"></div>
+  <div id="msgs"></div>
+</div>
+<script>
+const $=s=>document.querySelector(s);let IM="",CHAT="",timer=null;
+async function j(u){const r=await fetch(u);return r.json();}
+async function loadIms(){const d=await j("/api/ims");const sel=$("#im");sel.innerHTML="";
+  d.forEach(x=>{const o=document.createElement("option");o.value=x.im;o.textContent=`${x.im} (${x.n})`;sel.appendChild(o);});
+  IM=d[0]?.im||"";sel.value=IM;await loadChats();await loadMsgs();}
+async function loadChats(){const d=await j("/api/chats?im="+encodeURIComponent(IM));const box=$("#chats");
+  box.innerHTML="";const all=document.createElement("div");all.className="c"+(CHAT===""?" on":"");all.innerHTML='<div class="n">全部会话</div>';all.onclick=()=>{CHAT="";render(box);loadMsgs();};box.appendChild(all);
+  d.forEach(c=>{const el=document.createElement("div");el.className="c"+(CHAT===c.chat_id?" on":"");
+    el.innerHTML=`<div class="n">${esc(c.name)} ${c.is_group?'<span class=badge>群</span>':''}</div><div class=sub>${c.text_count}条 · ${c.last_time||''}</div>`;
+    el.onclick=()=>{CHAT=c.chat_id;render(box);loadMsgs();};box.appendChild(el);});}
+function render(box){[...box.children].forEach(e=>e.classList.remove("on"));}
+async function loadMsgs(){const q=$("#q").value.trim();
+  const u=`/api/messages?im=${encodeURIComponent(IM)}&chat=${encodeURIComponent(CHAT)}&q=${encodeURIComponent(q)}&order=desc&limit=300`;
+  const d=await j(u);const box=$("#msgs");const atBottom=true;
+  box.innerHTML=d.map(m=>`<div class="m"><span class="t">${m.time}</span>${CHAT?'':`<span class=who>«${esc(m.chat_name)}»</span>`}<span class=who>${esc(m.sender||'')}</span>${m.type!=='文本'?`<span class=ty>[${m.type}]</span> `:''}${esc((m.content||'').slice(0,600))}</div>`).join("");
+  $("#stat").textContent=`${d.length} 条 · ${new Date().toLocaleTimeString()}`;}
+function esc(s){return (s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
+function startAuto(){if(timer)clearInterval(timer);if($("#auto").checked)timer=setInterval(loadMsgs,parseInt($("#iv").value)*1000);}
+$("#im").onchange=async e=>{IM=e.target.value;CHAT="";await loadChats();await loadMsgs();};
+$("#go").onclick=loadMsgs;$("#q").addEventListener("keydown",e=>{if(e.key==="Enter")loadMsgs();});
+$("#auto").onchange=startAuto;$("#iv").onchange=startAuto;
+$("#collect").onclick=async()=>{$("#collect").textContent="采集中…";await j("/api/refresh?im="+encodeURIComponent(IM));$("#collect").textContent="立即采集";await loadChats();await loadMsgs();};
+loadIms().then(startAuto);
+</script></body></html>

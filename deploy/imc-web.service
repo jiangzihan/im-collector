@@ -1,0 +1,12 @@
+[Unit]
+Description=IM Collector - Web UI (127.0.0.1:8899)
+After=default.target
+[Service]
+Type=simple
+Environment=IMC_HOME=%h/im-collector
+Environment=IMC_WEB_PORT=8899
+ExecStart=/usr/bin/python3 %h/im-collector/web/serve.py
+Restart=on-failure
+RestartSec=10
+[Install]
+WantedBy=default.target

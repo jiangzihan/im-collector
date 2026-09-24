@@ -1,0 +1,6 @@
+[workspace]
+resolver = "2"
+members = ["common", "wechat", "dingtalk"]
+
+[profile.release]
+opt-level = 3

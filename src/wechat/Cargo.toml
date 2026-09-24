@@ -1,0 +1,11 @@
+[package]
+name = "imc-wechat"
+version = "0.1.0"
+edition = "2021"
+[[bin]]
+name = "imc-wechat"
+path = "src/main.rs"
+[dependencies]
+imc-common = { path = "../common" }
+rusqlite = { version = "0.32", features = ["bundled"] }
+hex = "0.4"

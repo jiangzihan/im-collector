@@ -1,0 +1,10 @@
+[package]
+name = "imc-dingtalk"
+version = "0.1.0"
+edition = "2021"
+[[bin]]
+name = "imc-dingtalk"
+path = "src/main.rs"
+[dependencies]
+imc-common = { path = "../common" }
+rusqlite = { version = "0.32", features = ["bundled"] }
