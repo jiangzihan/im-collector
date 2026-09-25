@@ -211,11 +211,13 @@ pub mod store {
             let c=Connection::open(path).map_err(|e|e.to_string())?;
             c.execute_batch(
               "CREATE TABLE IF NOT EXISTS chats(im TEXT,chat_id TEXT,name TEXT,is_group INT,msg_count INT,text_count INT,last_time TEXT,PRIMARY KEY(im,chat_id));
-               CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY AUTOINCREMENT,im TEXT,chat_id TEXT,chat_name TEXT,ts INTEGER,time TEXT,sender TEXT,type TEXT,content TEXT,src_id TEXT);
+               CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY AUTOINCREMENT,im TEXT,chat_id TEXT,chat_name TEXT,ts INTEGER,time TEXT,sender TEXT,type TEXT,content TEXT,src_id TEXT,sender_uid TEXT);
                CREATE UNIQUE INDEX IF NOT EXISTS ux_msg ON messages(im,chat_id,src_id);
                CREATE INDEX IF NOT EXISTS ix_msg_ts ON messages(im,ts);
-               CREATE TABLE IF NOT EXISTS sync_state(im TEXT,k TEXT,v INTEGER,PRIMARY KEY(im,k));"
+               CREATE TABLE IF NOT EXISTS sync_state(im TEXT,k TEXT,v INTEGER,PRIMARY KEY(im,k));
+               CREATE TABLE IF NOT EXISTS names(im TEXT,uid TEXT,name TEXT,PRIMARY KEY(im,uid));"
             ).map_err(|e|e.to_string())?;
+            let _=c.execute("ALTER TABLE messages ADD COLUMN sender_uid TEXT",[]); // 老库迁移(存在则忽略)
             Ok(Store{c})
         }
         pub fn cursor(&self,im:&str,k:&str)->i64{
@@ -228,8 +230,28 @@ pub mod store {
     }
     /// 在事务里插一条消息(去重), 返回是否新插入
     pub fn ins_msg(tx:&rusqlite::Transaction,im:&str,chat_id:&str,chat_name:&str,ts:i64,time:&str,sender:&str,ty:&str,content:&str,src_id:&str)->bool{
-        tx.execute("INSERT OR IGNORE INTO messages(im,chat_id,chat_name,ts,time,sender,type,content,src_id) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
-            rusqlite::params![im,chat_id,chat_name,ts,time,sender,ty,content,src_id]).unwrap_or(0)>0
+        ins_msg_uid(tx,im,chat_id,chat_name,ts,time,sender,ty,content,src_id,"")
+    }
+    pub fn ins_msg_uid(tx:&rusqlite::Transaction,im:&str,chat_id:&str,chat_name:&str,ts:i64,time:&str,sender:&str,ty:&str,content:&str,src_id:&str,sender_uid:&str)->bool{
+        tx.execute("INSERT OR IGNORE INTO messages(im,chat_id,chat_name,ts,time,sender,type,content,src_id,sender_uid) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+            rusqlite::params![im,chat_id,chat_name,ts,time,sender,ty,content,src_id,sender_uid]).unwrap_or(0)>0
+    }
+    /// 载入 im 的全部 uid->name
+    pub fn load_names(st:&Store,im:&str)->std::collections::HashMap<String,String>{
+        let mut m=std::collections::HashMap::new();
+        if let Ok(mut q)=st.c.prepare("SELECT uid,name FROM names WHERE im=?1"){
+            if let Ok(rows)=q.query_map(rusqlite::params![im],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))){
+                for row in rows.flatten(){ m.insert(row.0,row.1); }
+            }
+        }
+        m
+    }
+    pub fn save_name(tx:&rusqlite::Transaction,im:&str,uid:&str,name:&str){
+        let _=tx.execute("INSERT OR IGNORE INTO names(im,uid,name) VALUES(?1,?2,?3)",rusqlite::params![im,uid,name]);
+    }
+    /// 用已知 uid->name 回填历史消息里空的 sender
+    pub fn backfill_sender(tx:&rusqlite::Transaction,im:&str,uid:&str,name:&str){
+        let _=tx.execute("UPDATE messages SET sender=?3 WHERE im=?1 AND sender_uid=?2 AND (sender='' OR sender IS NULL)",rusqlite::params![im,uid,name]);
     }
     pub fn upsert_chat(tx:&rusqlite::Transaction,im:&str,chat_id:&str,name:&str,is_group:i64){
         let _=tx.execute("INSERT OR REPLACE INTO chats(im,chat_id,name,is_group,msg_count,text_count,last_time)

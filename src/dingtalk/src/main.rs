@@ -33,6 +33,27 @@ fn parse_mentions(s:&str, map:&mut std::collections::HashMap<String,String>){
         } else { i+=1; }
     }
 }
+// 解析成员名册 {"nick":"名","uId":"号",...} -> uid->name
+fn parse_roster(s:&str, map:&mut std::collections::HashMap<String,String>){
+    let b=s.as_bytes(); let mut i=0; let mut last=String::new();
+    while i<b.len(){
+        if b[i]==b'"'{
+            let ks=i+1; let mut j=ks; while j<b.len()&&b[j]!=b'"'{j+=1;} if j>=b.len(){break;}
+            let key=&s[ks..j];
+            if j+2<b.len()&&b[j+1]==b':'&&b[j+2]==b'"'{
+                let vs=j+3; let mut k=vs; while k<b.len()&&b[k]!=b'"'{k+=1;}
+                let val=&s[vs..k.min(s.len())];
+                match key {
+                    "nick"|"name"|"userNick"|"remark"|"orgName"|"showName" => { if !val.is_empty(){ last=clean_name(val); } }
+                    "uId"|"uid"|"userId"|"emplId"|"staffId" => { if !val.is_empty() && val.bytes().all(|c|c.is_ascii_digit()) && !last.is_empty(){ map.entry(val.to_string()).or_insert_with(||last.clone()); } }
+                    _=>{}
+                }
+                i=k+1; continue;
+            }
+            i=j+1;
+        } else { i+=1; }
+    }
+}
 // 把正文里的 @<uid> 换成 @<姓名>
 fn rewrite_mentions(content:&str, map:&std::collections::HashMap<String,String>)->String{
     let b=content.as_bytes(); let mut out=String::with_capacity(content.len()); let mut i=0; let mut last=0;
@@ -48,7 +69,8 @@ fn rewrite_mentions(content:&str, map:&std::collections::HashMap<String,String>)
 
 fn good_content(s:&str)->bool{
     if s.len()<2 {return false;}
-    if s.starts_with("@lA")||s.starts_with("dingtalk://")||s.starts_with('{')||s.starts_with('['){return false;}
+    if s.starts_with("@lA")||s.starts_with("dingtalk://")||s.starts_with('{')||s.starts_with('[')||s.starts_with("$:"){return false;}
+    if s.contains("\"uId\"")||s.contains("\"nick\"")||s.contains("\"mediaId\"")||s.contains("\"emplId\""){return false;}
     if s.chars().all(|c|c.is_ascii_digit()){return false;}
     cjk(s)>=2 || s.contains("http") || (s.contains(' ') && s.len()>6)
 }
@@ -77,10 +99,13 @@ fn collect()->Result<(),String>{
     mem::for_regions(&pid,|buf|{ leaf::scan(buf,&mut recs); })?;
     // 构建 cid->群名 映射
     let mut convmap:std::collections::HashMap<String,String>=std::collections::HashMap::new();
-    let mut uidmap:std::collections::HashMap<String,String>=std::collections::HashMap::new();
-    for v in &recs { for x in v { if let Val::Text(t)=x { if t.starts_with("{\"") && t.contains("\":\"") { parse_mentions(t,&mut uidmap); } } } }
-    for v in &recs { if let Some((cid,title))=conv_entry(v){ convmap.entry(cid).and_modify(|e|{if title.len()>e.len(){*e=title.clone();}}).or_insert(title); } }
     let mut s=store::Store::open(&format!("{}/imstore.db",data()))?;
+    let mut uidmap:std::collections::HashMap<String,String>=store::load_names(&s,IM); // 历史累积
+    for v in &recs { for x in v { if let Val::Text(t)=x {
+        if t.contains("\"uId\"")||t.contains("\"nick\"") { parse_roster(t,&mut uidmap); }
+        else if t.starts_with("{\"") && t.contains("\":\"") { parse_mentions(t,&mut uidmap); }
+    } } }
+    for v in &recs { if let Some((cid,title))=conv_entry(v){ convmap.entry(cid).and_modify(|e|{if title.len()>e.len(){*e=title.clone();}}).or_insert(title); } }
     let mut newn=0i64; let mut chats=std::collections::HashSet::new();
     {
         let tx=s.begin();
@@ -110,9 +135,11 @@ fn collect()->Result<(),String>{
             let mut src=format!("{}-{:x}",ts,djb2(content));
             for x in v { if let Val::Text(t)=x { if is_cidmsgid(t){ src=t.clone(); break; } } }
             let name=convmap.get(&cid).cloned().unwrap_or_else(||cid.clone());
-            if store::ins_msg(&tx,IM,&cid,&name,ts,&fmt_time(ts),&sender,"文本",content,&src){ newn+=1; }
+            if store::ins_msg_uid(&tx,IM,&cid,&name,ts,&fmt_time(ts),&sender,"文本",content,&src,&suid){ newn+=1; }
             chats.insert(cid);
         }
+        // 持久化 uid->name, 并回填历史空 sender
+        for (uid,nm) in &uidmap { store::save_name(&tx,IM,uid,nm); store::backfill_sender(&tx,IM,uid,nm); }
         // 回填历史消息的群名 + 更新会话名
         for (cid,title) in &convmap {
             let _=tx.execute("UPDATE messages SET chat_name=?3 WHERE im=?1 AND chat_id=?2",rusqlite::params![IM,cid,title]);
