@@ -50,6 +50,24 @@ resolve_units(){ # 服务名 -> UNITS[]; 无参=全部; 未知名报错返回 1
   done
 }
 
+in_units(){ local u; for u in "${UNITS[@]}"; do [ "$u" = "$1" ] && return 0; done; return 1; }
+
+ensure_ptrace(){ # 钉钉内存取证需 kernel.yama.ptrace_scope=0; 临时设置(随启动, 重启后失效)
+  local f=/proc/sys/kernel/yama/ptrace_scope cur
+  [ -r "$f" ] || return 0            # 无 Yama 模块: 默认即可读进程内存, 无需处理
+  cur="$(cat "$f" 2>/dev/null || echo 0)"
+  [ "$cur" = 0 ] && return 0
+  echo "钉钉需 kernel.yama.ptrace_scope=0 (当前 $cur), 临时设置(可能需输入 sudo 密码)..."
+  sudo sysctl -w kernel.yama.ptrace_scope=0 >/dev/null 2>&1
+  cur="$(cat "$f" 2>/dev/null || echo 1)"
+  if [ "$cur" != 0 ]; then
+    echo "  !! 仍为 $cur, 钉钉将无法采集。请手动执行: sudo sysctl -w kernel.yama.ptrace_scope=0" >&2
+    return 1
+  fi
+  echo "  已临时设为 0(重启后失效)。"
+  return 0
+}
+
 cmd="${1:-}"; shift 2>/dev/null || true
 
 case "$cmd" in
@@ -63,15 +81,18 @@ have_user_bus || die "systemd --user 不可用(需在有用户总线的登录会
 case "$cmd" in
   start)
     ensure_installed; resolve_units "$@" || exit 2
+    in_units imc-dingtalk.service && { ensure_ptrace || true; }
     systemctl --user start "${UNITS[@]}" && echo "已启动: ${UNITS[*]}" ;;
   stop)
     resolve_units "$@" || exit 2
     systemctl --user stop "${UNITS[@]}" && echo "已停止: ${UNITS[*]}" ;;
   restart)
     ensure_installed; resolve_units "$@" || exit 2
+    in_units imc-dingtalk.service && { ensure_ptrace || true; }
     systemctl --user restart "${UNITS[@]}" && echo "已重启: ${UNITS[*]}" ;;
   enable)
     ensure_installed; resolve_units "$@" || exit 2
+    in_units imc-dingtalk.service && { ensure_ptrace || true; }
     loginctl enable-linger "$USER" 2>/dev/null || true
     systemctl --user enable --now "${UNITS[@]}" && echo "已设开机自启: ${UNITS[*]}" ;;
   disable)

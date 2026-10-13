@@ -51,6 +51,8 @@ deploy/install.sh --build --register-mcp                                    # �
 ```
 首次或 deploy/*.service 改动后, start/restart/enable/status 会自动把单元重装到
 `~/.config/systemd/user/`(无需单独跑 install.sh 的单元步骤)。
+启动项含钉钉时, 脚本会自动**临时**设置 `kernel.yama.ptrace_scope=0`(内存取证前置,
+会提示输入 sudo 密码, 重启后失效; 仅钉钉需要, 微信走已缓存密钥不读进程内存)。
 
 ## 跨平台(Windows)
 进程内存访问层已抽象为跨平台(`common::mem`):Linux 走 `/proc/<pid>/{maps,mem}`,Windows 走
