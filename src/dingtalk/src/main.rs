@@ -124,36 +124,47 @@ fn collect()->Result<(),String>{
     for v in &recs { if let Some((cid,title))=conv_entry(v){ convmap.entry(cid).and_modify(|e|{if title.len()>e.len(){*e=title.clone();}}).or_insert(title); } }
     let hi=now_ms_plus_day(); // 时间戳上界: 当前时间+1天(消息不会来自未来)
     let mut newn=0i64; let mut chats=std::collections::HashSet::new();
+    // 本次扫描内先按 (ts,内容) 去重: 同一条消息常被从内存多处解析出多份(cid 有的解析成功、
+    // 有的为 unknown), 保留解析质量最高的一份(有真实 cid 优先, 其次有发送者), 避免入库重复。
+    struct Cand{ cid:String, suid:String, sender:String, src:String }
+    let qual=|c:&Cand| -> i32 { (if c.cid!="unknown"{2}else{0}) + (if !c.sender.is_empty(){1}else{0}) };
+    let mut best:std::collections::HashMap<(i64,String),Cand>=std::collections::HashMap::new();
+    for v in &recs {
+        // ts
+        let mut ts=None;
+        for x in v { if let Val::Int(i)=x { if *i>=LO && *i<=hi { ts=Some(*i); } } }
+        let ts=match ts{Some(t)=>t/1000,None=>continue};
+        // content
+        let mut content:Option<&str>=None;
+        for x in v { if let Val::Text(t)=x { if good_content(t) { if content.map_or(true,|c|t.len()>c.len()){content=Some(t);} } } }
+        let content=match content{Some(c)=>c,None=>continue};
+        // 数值字段(有序): 找发送者uid
+        let mut nums:Vec<String>=Vec::new();
+        for x in v { match x { Val::Int(n)=>nums.push(n.to_string()), Val::Text(t) if !t.is_empty()&&t.bytes().all(|c|c.is_ascii_digit())=>nums.push(t.clone()), _=>{} } }
+        // cid: 第一个足够大、且不落在毫秒时间戳区间 [LO,hi] 的整数
+        // (否则会把记录里的 ms 时间戳 ~1.79e12 误当成 cid, 产生"时间戳作会话id"的幽灵重复)
+        let mut cid=String::from("unknown");
+        for x in v { if let Val::Int(i)=x { if *i>1_000_000 && (*i<LO || *i>hi) { cid=i.to_string(); break; } } }
+        // 发送者uid: 优先在 uidmap 里、且非cid非13位ts的数值
+        let ts_ms=(ts*1000).to_string();
+        let suid=nums.iter().find(|n| **n!=cid && n.len()!=13 && *n!=&ts_ms && uidmap.contains_key(*n))
+            .or_else(||nums.iter().find(|n| **n!=cid && n.len()>=8 && n.len()!=13 && *n!=&ts_ms))
+            .cloned().unwrap_or_default();
+        let sender=uidmap.get(&suid).cloned().unwrap_or_default();
+        let content=rewrite_mentions(content,&uidmap);
+        // src_id: cid:msgid 文本优先, 否则 ts-hash
+        let mut src=format!("{}-{:x}",ts,djb2(&content));
+        for x in v { if let Val::Text(t)=x { if is_cidmsgid(t){ src=t.clone(); break; } } }
+        let cand=Cand{cid,suid,sender,src};
+        let key=(ts, content);
+        match best.get(&key){ Some(old) if qual(old)>=qual(&cand)=>{}, _=>{ best.insert(key,cand); } }
+    }
     {
         let tx=s.begin();
-        for v in &recs {
-            // ts
-            let mut ts=None;
-            for x in v { if let Val::Int(i)=x { if *i>=LO && *i<=hi { ts=Some(*i); } } }
-            let ts=match ts{Some(t)=>t/1000,None=>continue};
-            // content
-            let mut content:Option<&str>=None;
-            for x in v { if let Val::Text(t)=x { if good_content(t) { if content.map_or(true,|c|t.len()>c.len()){content=Some(t);} } } }
-            let content=match content{Some(c)=>c,None=>continue};
-            // 数值字段(有序): [0]=cid, 找发送者uid
-            let mut nums:Vec<String>=Vec::new();
-            for x in v { match x { Val::Int(n)=>nums.push(n.to_string()), Val::Text(t) if !t.is_empty()&&t.bytes().all(|c|c.is_ascii_digit())=>nums.push(t.clone()), _=>{} } }
-            let mut cid=String::from("unknown");
-            for x in v { if let Val::Int(i)=x { if *i!=ts && *i>1_000_000 { cid=i.to_string(); break; } } }
-            // 发送者uid: 优先在 uidmap 里、且非cid非13位ts的数值
-            let ts_ms=(ts*1000).to_string();
-            let suid=nums.iter().find(|n| **n!=cid && n.len()!=13 && *n!=&ts_ms && uidmap.contains_key(*n))
-                .or_else(||nums.iter().find(|n| **n!=cid && n.len()>=8 && n.len()!=13 && *n!=&ts_ms))
-                .cloned().unwrap_or_default();
-            let sender=uidmap.get(&suid).cloned().unwrap_or_default();
-            let content=rewrite_mentions(content,&uidmap);
-            let content=content.as_str();
-            // src_id: cid:msgid 文本优先, 否则 ts-hash
-            let mut src=format!("{}-{:x}",ts,djb2(content));
-            for x in v { if let Val::Text(t)=x { if is_cidmsgid(t){ src=t.clone(); break; } } }
-            let name=convmap.get(&cid).cloned().unwrap_or_else(||cid.clone());
-            if store::ins_msg_uid(&tx,IM,&cid,&name,ts,&fmt_time(ts),&sender,"文本",content,&src,&suid){ newn+=1; }
-            chats.insert(cid);
+        for ((ts,content),c) in &best {
+            let name=convmap.get(&c.cid).cloned().unwrap_or_else(||c.cid.clone());
+            if store::ins_msg_uid(&tx,IM,&c.cid,&name,*ts,&fmt_time(*ts),&c.sender,"文本",content,&c.src,&c.suid){ newn+=1; }
+            chats.insert(c.cid.clone());
         }
         // 持久化 uid->name, 并回填历史空 sender
         for (uid,nm) in &uidmap { store::save_name(&tx,IM,uid,nm); store::backfill_sender(&tx,IM,uid,nm); }
