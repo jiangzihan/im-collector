@@ -1,6 +1,6 @@
 # im-collector 总览
 
-按 IM 类型采集聊天记录 → 统一本地 SQLite(`data/imstore.db`) → 统一筛选/统计/分析(MCP)。
+按 IM 类型采集聊天记录 → 统一本地 SQLite(`~/.local/share/im-collector/imstore.db`) → 统一筛选/统计/分析(MCP)。
 
 ## 目录(隔离)
 - `reverse/`  逆向实验文件(钉钉 LD_PRELOAD 钩子/ gdb 脚本/内存取证原型) —— 与生产实现隔离
@@ -10,7 +10,7 @@
 - `mcp/`      MCP 服务(多 IM, 接入 Claude)
 - `scripts/`  便捷脚本
 - `deploy/`   systemd 用户服务 + install.sh + sysctl + 迁移
-- `data/`     imstore.db(统一库) + 各 IM 工作目录(keys/decrypted) —— 敏感, gitignore
+- 运行时数据不在源码树内: 默认 `~/.local/share/im-collector/`(DB + 各 IM keys/decrypted), 可用 `IMC_DATA` / `XDG_DATA_HOME` 覆盖 —— 敏感, 不入库
 
 ## 共性流水线(所有 IM 抽象为同样阶段, 见 common)
 1. acquire  取访问: 微信=内存扫 SQLCipher 原始密钥; 钉钉=进程内存已解密(SEE, 见 reverse-dingtalk)

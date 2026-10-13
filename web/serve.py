@@ -1,9 +1,17 @@
 #!/usr/bin/env python3
-"""im-collector 本地 Web: 只监听 127.0.0.1, 读 data/imstore.db, 网页轮询实现实时。"""
+"""im-collector 本地 Web: 只监听 127.0.0.1, 读统一库(home 共享目录), 网页轮询实现实时。"""
 import os,json,sqlite3,subprocess,datetime,urllib.parse
 from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 ROOT=os.environ.get("IMC_HOME",os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-DB=os.path.join(ROOT,"data","imstore.db"); BIN=os.path.join(ROOT,"bin")
+# 运行时数据目录: 不在源码树内, 默认 home 共享目录 ~/.local/share/im-collector
+def _data_dir():
+    d=os.environ.get("IMC_DATA")
+    if not d:
+        xdg=os.environ.get("XDG_DATA_HOME")
+        d=os.path.join(xdg,"im-collector") if xdg else os.path.join(os.path.expanduser("~"),".local","share","im-collector")
+    return d
+DATA=_data_dir()
+DB=os.path.join(DATA,"imstore.db"); BIN=os.path.join(ROOT,"bin")
 HTML=os.path.join(os.path.dirname(os.path.abspath(__file__)),"index.html")
 def db():
     c=sqlite3.connect(f"file:{DB}?mode=ro",uri=True); c.row_factory=sqlite3.Row; return c

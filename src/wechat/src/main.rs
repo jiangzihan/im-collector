@@ -5,8 +5,15 @@ use std::path::Path;
 
 const IM:&str="wechat";
 fn home()->String{ std::env::var("HOME").unwrap_or("/root".into()) }
-fn root()->String{ std::env::var("IMC_HOME").unwrap_or(format!("{}/im-collector",home())) }
-fn data()->String{ format!("{}/data",root()) }
+// 运行时数据(数据库/密钥/解密库)目录: 不放在源码树内, 默认 home 共享目录 ~/.local/share/im-collector
+// 覆盖顺序: $IMC_DATA > $XDG_DATA_HOME/im-collector > ~/.local/share/im-collector
+fn data()->String{
+    let d = std::env::var("IMC_DATA").ok()
+        .or_else(|| std::env::var("XDG_DATA_HOME").ok().filter(|s|!s.is_empty()).map(|x|format!("{}/im-collector",x)))
+        .unwrap_or_else(|| format!("{}/.local/share/im-collector",home()));
+    std::fs::create_dir_all(&d).ok();
+    d
+}
 
 fn find_src()->Option<String>{
     let base=format!("{}/Documents/xwechat_files",home());

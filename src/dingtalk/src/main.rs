@@ -4,8 +4,15 @@ use imc_common::leaf::Val;
 const IM:&str="dingtalk";
 const LO:i64=1577836800000; const HI:i64=1790900000000;
 fn home()->String{ std::env::var("HOME").unwrap_or("/root".into()) }
-fn root()->String{ std::env::var("IMC_HOME").unwrap_or(format!("{}/im-collector",home())) }
-fn data()->String{ format!("{}/data",root()) }
+// 运行时数据(数据库/密钥/解密库)目录: 不放在源码树内, 默认 home 共享目录 ~/.local/share/im-collector
+// 覆盖顺序: $IMC_DATA > $XDG_DATA_HOME/im-collector > ~/.local/share/im-collector
+fn data()->String{
+    let d = std::env::var("IMC_DATA").ok()
+        .or_else(|| std::env::var("XDG_DATA_HOME").ok().filter(|s|!s.is_empty()).map(|x|format!("{}/im-collector",x)))
+        .unwrap_or_else(|| format!("{}/.local/share/im-collector",home()));
+    std::fs::create_dir_all(&d).ok();
+    d
+}
 
 fn cjk(s:&str)->usize{ s.chars().filter(|c|('\u{4e00}'..='\u{9fff}').contains(c)).count() }
 fn djb2(s:&str)->u64{ let mut h:u64=5381; for b in s.bytes(){h=h.wrapping_mul(33).wrapping_add(b as u64);} h }

@@ -1,5 +1,33 @@
+# ===== 本项目仅纳入源码。运行时数据/构建产物/敏感文件一律排除 =====
+
+# 运行时数据(现已迁至 home 共享目录 ~/.local/share/im-collector; 保留以防旧布局残留)
 /data/
+
+# Rust 构建产物
 /src/target/
+target/
+
+# 编译出的二进制
+/bin/
+
+# Python 缓存
 __pycache__/
 *.pyc
-/bin/
+*.pyo
+
+# 敏感数据: 数据库 / 密钥 / 解密产物(任何位置, 防误入库)
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+keys.txt
+*.key
+decrypted/
+
+# 编辑器 / 系统杂项
+.DS_Store
+*.swp
+*~
+.idea/
+.vscode/

@@ -1,9 +1,17 @@
 #!/usr/bin/env python3
-"""多 IM 聊天记录 MCP 服务: 读统一库 data/imstore.db, 供 Claude 按 IM/会话/时间分析。"""
+"""多 IM 聊天记录 MCP 服务: 读统一库(home 共享目录), 供 Claude 按 IM/会话/时间分析。"""
 import os,sqlite3,subprocess,datetime
 from mcp.server.fastmcp import FastMCP
 ROOT=os.environ.get("IMC_HOME", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-DB=os.path.join(ROOT,"data","imstore.db")
+# 运行时数据目录: 不在源码树内, 默认 home 共享目录 ~/.local/share/im-collector
+def _data_dir():
+    d=os.environ.get("IMC_DATA")
+    if not d:
+        xdg=os.environ.get("XDG_DATA_HOME")
+        d=os.path.join(xdg,"im-collector") if xdg else os.path.join(os.path.expanduser("~"),".local","share","im-collector")
+    return d
+DATA=_data_dir()
+DB=os.path.join(DATA,"imstore.db")
 BIN=os.path.join(ROOT,"bin")
 mcp=FastMCP("im-collector")
 
