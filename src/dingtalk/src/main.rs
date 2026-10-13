@@ -2,7 +2,13 @@ use imc_common::{store, fmt_time, mem, leaf};
 use imc_common::leaf::Val;
 
 const IM:&str="dingtalk";
-const LO:i64=1577836800000; const HI:i64=1790900000000;
+// 毫秒时间戳下界(2020-01-01); 上界在运行时取"当前时间+1天"(见 collect 的 hi)——
+// 消息不会来自未来, 用它过滤把二进制垃圾大整数误判成时间戳的情况。
+const LO:i64=1577836800000;
+fn now_ms_plus_day()->i64{
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+        .map(|d|d.as_millis() as i64 + 86_400_000).unwrap_or(i64::MAX)
+}
 fn home()->String{ std::env::var("HOME").or_else(|_|std::env::var("USERPROFILE")).unwrap_or_else(|_|".".into()) }
 // 运行时数据(数据库/密钥/解密库)目录: 不放在源码树内, 默认 home 共享目录 ~/.local/share/im-collector
 // 覆盖顺序: $IMC_DATA > $XDG_DATA_HOME/im-collector > ~/.local/share/im-collector
@@ -116,13 +122,14 @@ fn collect()->Result<(),String>{
         else if t.starts_with("{\"") && t.contains("\":\"") { parse_mentions(t,&mut uidmap); }
     } } }
     for v in &recs { if let Some((cid,title))=conv_entry(v){ convmap.entry(cid).and_modify(|e|{if title.len()>e.len(){*e=title.clone();}}).or_insert(title); } }
+    let hi=now_ms_plus_day(); // 时间戳上界: 当前时间+1天(消息不会来自未来)
     let mut newn=0i64; let mut chats=std::collections::HashSet::new();
     {
         let tx=s.begin();
         for v in &recs {
             // ts
             let mut ts=None;
-            for x in v { if let Val::Int(i)=x { if *i>=LO && *i<=HI { ts=Some(*i); } } }
+            for x in v { if let Val::Int(i)=x { if *i>=LO && *i<=hi { ts=Some(*i); } } }
             let ts=match ts{Some(t)=>t/1000,None=>continue};
             // content
             let mut content:Option<&str>=None;
