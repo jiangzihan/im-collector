@@ -3,7 +3,7 @@ use imc_common::leaf::Val;
 
 const IM:&str="dingtalk";
 const LO:i64=1577836800000; const HI:i64=1790900000000;
-fn home()->String{ std::env::var("HOME").unwrap_or("/root".into()) }
+fn home()->String{ std::env::var("HOME").or_else(|_|std::env::var("USERPROFILE")).unwrap_or_else(|_|".".into()) }
 // 运行时数据(数据库/密钥/解密库)目录: 不放在源码树内, 默认 home 共享目录 ~/.local/share/im-collector
 // 覆盖顺序: $IMC_DATA > $XDG_DATA_HOME/im-collector > ~/.local/share/im-collector
 fn data()->String{
@@ -101,7 +101,10 @@ fn is_cidmsgid(s:&str)->bool{
 }
 
 fn collect()->Result<(),String>{
-    let pid=mem::pid_by_cmd("com.alibabainc.dingtalk").ok_or("钉钉未运行")?;
+    // 进程定位: Linux 匹配 cmdline(反域名包名), Windows 匹配映像名 DingTalk.exe
+    #[cfg(unix)] let needle="com.alibabainc.dingtalk";
+    #[cfg(windows)] let needle="DingTalk";
+    let pid=mem::pid_by_cmd(needle).ok_or("钉钉未运行")?;
     let mut recs:Vec<Vec<Val>>=Vec::new();
     mem::for_regions(&pid,|buf|{ leaf::scan(buf,&mut recs); })?;
     // 构建 cid->群名 映射

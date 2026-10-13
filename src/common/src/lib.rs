@@ -1,7 +1,6 @@
 //! 多 IM 采集共享库: 存储 / SQLCipher 解密 / 进程内存扫描 / SQLite 叶子页解析。
 use std::fs::File;
 use std::io::{Read, Write};
-use std::os::unix::fs::FileExt;
 
 // ============ 工具 ============
 pub fn md5hex(s: &str) -> String {
@@ -99,45 +98,136 @@ pub mod crypto {
     fn is_hex(b:u8)->bool{ b.is_ascii_digit()||(b'a'..=b'f').contains(&b)||(b'A'..=b'F').contains(&b) }
 }
 
-// ============ 进程内存 ============
+// ============ 进程内存(跨平台) ============
+// 统一 API: pid_by_cmd(needle)->pid, for_regions(pid, f) 遍历可读内存区。
+// Linux: /proc/<pid>/{cmdline,status,maps,mem}; Windows: ToolHelp + VirtualQueryEx + ReadProcessMemory。
+// 注意 needle 语义: Linux 匹配 cmdline 子串; Windows 匹配进程映像名(不区分大小写)子串。
 pub mod mem {
-    use super::*;
-    pub fn pid_by_cmd(needle:&str)->Option<String>{
-        let mut best:(u64,String)=(0,String::new());
-        for e in std::fs::read_dir("/proc").ok()?{
-            let e=e.ok()?; let p=e.file_name().into_string().unwrap_or_default();
-            if !p.chars().all(|c|c.is_ascii_digit()){continue;}
-            if let Ok(cl)=std::fs::read(format!("/proc/{p}/cmdline")){
-                if cl.windows(needle.len()).any(|w|w==needle.as_bytes()){
-                    let rss=rss_kb(&p); if rss>best.0{best=(rss,p);}
+    #[cfg(unix)]
+    mod imp {
+        use std::fs::File;
+        use std::os::unix::fs::FileExt;
+        pub fn pid_by_cmd(needle:&str)->Option<String>{
+            let mut best:(u64,String)=(0,String::new());
+            for e in std::fs::read_dir("/proc").ok()?{
+                let e=e.ok()?; let p=e.file_name().into_string().unwrap_or_default();
+                if !p.chars().all(|c|c.is_ascii_digit()){continue;}
+                if let Ok(cl)=std::fs::read(format!("/proc/{p}/cmdline")){
+                    if cl.windows(needle.len()).any(|w|w==needle.as_bytes()){
+                        let rss=rss_kb(&p); if rss>best.0{best=(rss,p);}
+                    }
                 }
             }
+            if best.1.is_empty(){None}else{Some(best.1)}
         }
-        if best.1.is_empty(){None}else{Some(best.1)}
-    }
-    fn rss_kb(pid:&str)->u64{
-        if let Ok(s)=std::fs::read_to_string(format!("/proc/{pid}/status")){
-            for l in s.lines(){ if let Some(r)=l.strip_prefix("VmRSS:"){ return r.split_whitespace().next().and_then(|x|x.parse().ok()).unwrap_or(0);}}
+        fn rss_kb(pid:&str)->u64{
+            if let Ok(s)=std::fs::read_to_string(format!("/proc/{pid}/status")){
+                for l in s.lines(){ if let Some(r)=l.strip_prefix("VmRSS:"){ return r.split_whitespace().next().and_then(|x|x.parse().ok()).unwrap_or(0);}}
+            }
+            0
         }
-        0
-    }
-    /// 对每个可读内存区调用 f(&buf)
-    pub fn for_regions<F:FnMut(&[u8])>(pid:&str,mut f:F)->Result<(),String>{
-        let maps=std::fs::read_to_string(format!("/proc/{pid}/maps")).map_err(|e|format!("maps: {e}"))?;
-        let mf=File::open(format!("/proc/{pid}/mem")).map_err(|e|format!("mem(需 ptrace_scope=0?): {e}"))?;
-        for line in maps.lines(){
-            let mut it=line.split_whitespace();
-            let range=match it.next(){Some(r)=>r,None=>continue};
-            let perms=it.next().unwrap_or(""); if !perms.starts_with('r'){continue;}
-            let mut rb=range.split('-');
-            let (a,b)=match(rb.next(),rb.next()){(Some(a),Some(b))=>(a,b),_=>continue};
-            let (s,e)=match(u64::from_str_radix(a,16),u64::from_str_radix(b,16)){(Ok(s),Ok(e)) if e>s=>(s,e),_=>continue};
-            let sz=(e-s) as usize; if sz>800*1024*1024{continue;}
-            let mut buf=vec![0u8;sz];
-            if let Ok(n)=mf.read_at(&mut buf,s){ if n>0 { f(&buf[..n]); } }
+        /// 对每个可读内存区调用 f(&buf)
+        pub fn for_regions<F:FnMut(&[u8])>(pid:&str,mut f:F)->Result<(),String>{
+            let maps=std::fs::read_to_string(format!("/proc/{pid}/maps")).map_err(|e|format!("maps: {e}"))?;
+            let mf=File::open(format!("/proc/{pid}/mem")).map_err(|e|format!("mem(需 ptrace_scope=0?): {e}"))?;
+            for line in maps.lines(){
+                let mut it=line.split_whitespace();
+                let range=match it.next(){Some(r)=>r,None=>continue};
+                let perms=it.next().unwrap_or(""); if !perms.starts_with('r'){continue;}
+                let mut rb=range.split('-');
+                let (a,b)=match(rb.next(),rb.next()){(Some(a),Some(b))=>(a,b),_=>continue};
+                let (s,e)=match(u64::from_str_radix(a,16),u64::from_str_radix(b,16)){(Ok(s),Ok(e)) if e>s=>(s,e),_=>continue};
+                let sz=(e-s) as usize; if sz>800*1024*1024{continue;}
+                let mut buf=vec![0u8;sz];
+                if let Ok(n)=mf.read_at(&mut buf,s){ if n>0 { f(&buf[..n]); } }
+            }
+            Ok(())
         }
-        Ok(())
     }
+
+    #[cfg(windows)]
+    mod imp {
+        use windows::Win32::Foundation::{CloseHandle, HANDLE};
+        use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ};
+        use windows::Win32::System::Diagnostics::ToolHelp::{
+            CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+        };
+        use windows::Win32::System::Memory::{
+            VirtualQueryEx, MEMORY_BASIC_INFORMATION, MEM_COMMIT,
+            PAGE_GUARD, PAGE_NOACCESS, PAGE_READONLY, PAGE_READWRITE, PAGE_WRITECOPY,
+            PAGE_EXECUTE_READ, PAGE_EXECUTE_READWRITE, PAGE_EXECUTE_WRITECOPY,
+        };
+        use windows::Win32::System::Diagnostics::Debug::ReadProcessMemory;
+        use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
+
+        /// 按进程映像名(不区分大小写)子串匹配, 取工作集最大的进程
+        pub fn pid_by_cmd(needle:&str)->Option<String>{
+            let needle=needle.to_lowercase();
+            let mut best:(usize,u32)=(0,0);
+            unsafe{
+                let snap=CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS,0).ok()?;
+                let mut pe=PROCESSENTRY32W{ dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32, ..Default::default() };
+                if Process32FirstW(snap,&mut pe).is_ok(){
+                    loop{
+                        let len=pe.szExeFile.iter().position(|&c|c==0).unwrap_or(pe.szExeFile.len());
+                        let name=String::from_utf16_lossy(&pe.szExeFile[..len]);
+                        if name.to_lowercase().contains(&needle){
+                            let ws=working_set(pe.th32ProcessID);
+                            if ws>=best.0{ best=(ws,pe.th32ProcessID); }
+                        }
+                        if Process32NextW(snap,&mut pe).is_err(){break;}
+                    }
+                }
+                let _=CloseHandle(snap);
+            }
+            if best.1==0{None}else{Some(best.1.to_string())}
+        }
+
+        fn working_set(pid:u32)->usize{
+            unsafe{
+                let h=match OpenProcess(PROCESS_QUERY_INFORMATION|PROCESS_VM_READ,false,pid){Ok(h)=>h,Err(_)=>return 0};
+                let mut pmc=PROCESS_MEMORY_COUNTERS{ cb: std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32, ..Default::default() };
+                let r=GetProcessMemoryInfo(h,&mut pmc,pmc.cb);
+                let _=CloseHandle(h);
+                if r.is_ok(){ pmc.WorkingSetSize } else {0}
+            }
+        }
+
+        /// 对每个已提交且可读的内存区调用 f(&buf)
+        pub fn for_regions<F:FnMut(&[u8])>(pid:&str,mut f:F)->Result<(),String>{
+            let pid:u32=pid.parse().map_err(|_|"bad pid".to_string())?;
+            unsafe{
+                let h:HANDLE=OpenProcess(PROCESS_QUERY_INFORMATION|PROCESS_VM_READ,false,pid)
+                    .map_err(|e|format!("OpenProcess(需管理员/SeDebugPrivilege?): {e}"))?;
+                let mut addr:usize=0;
+                let readable_mask=PAGE_READONLY.0|PAGE_READWRITE.0|PAGE_WRITECOPY.0
+                    |PAGE_EXECUTE_READ.0|PAGE_EXECUTE_READWRITE.0|PAGE_EXECUTE_WRITECOPY.0;
+                loop{
+                    let mut mbi=MEMORY_BASIC_INFORMATION::default();
+                    let got=VirtualQueryEx(h,Some(addr as *const _),&mut mbi,std::mem::size_of::<MEMORY_BASIC_INFORMATION>());
+                    if got==0{break;}
+                    let base=mbi.BaseAddress as usize;
+                    let size=mbi.RegionSize;
+                    let prot=mbi.Protect.0;
+                    let readable=mbi.State==MEM_COMMIT
+                        && (prot&readable_mask)!=0
+                        && (prot&PAGE_GUARD.0)==0
+                        && (prot&PAGE_NOACCESS.0)==0;
+                    if readable && size>0 && size<=800*1024*1024 {
+                        let mut buf=vec![0u8;size];
+                        let mut read:usize=0;
+                        let ok=ReadProcessMemory(h,base as *const _,buf.as_mut_ptr() as *mut _,size,Some(&mut read)).is_ok();
+                        if ok && read>0 { f(&buf[..read]); }
+                    }
+                    match base.checked_add(size){ Some(n) if n>addr=>addr=n, _=>break }
+                }
+                let _=CloseHandle(h);
+            }
+            Ok(())
+        }
+    }
+
+    pub use imp::{pid_by_cmd, for_regions};
 }
 
 // ============ SQLite 叶子页解析(钉钉内存取证) ============

@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 const IM:&str="wechat";
-fn home()->String{ std::env::var("HOME").unwrap_or("/root".into()) }
+fn home()->String{ std::env::var("HOME").or_else(|_|std::env::var("USERPROFILE")).unwrap_or_else(|_|".".into()) }
 // 运行时数据(数据库/密钥/解密库)目录: 不放在源码树内, 默认 home 共享目录 ~/.local/share/im-collector
 // 覆盖顺序: $IMC_DATA > $XDG_DATA_HOME/im-collector > ~/.local/share/im-collector
 fn data()->String{
@@ -23,7 +23,11 @@ fn find_src()->Option<String>{
     }
     None
 }
+// Linux: cmdline 含 "wechat"; Windows: 映像名 Weixin.exe(4.0) 或 WeChat.exe(3.x)
+#[cfg(unix)]
 fn wechat_pid()->Option<String>{ mem::pid_by_cmd("wechat") }
+#[cfg(windows)]
+fn wechat_pid()->Option<String>{ mem::pid_by_cmd("Weixin").or_else(||mem::pid_by_cmd("WeChat")) }
 
 fn get_keys(force:bool)->Result<Vec<Vec<u8>>,String>{
     let kf=format!("{}/wechat/keys.txt",data());

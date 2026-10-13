@@ -31,10 +31,34 @@
 | 钉钉 取口令(可选,gdb) | `reverse/dingtalk/run_gdb.sh` |
 | 统一查询 | 通过 MCP `im-collector`: list_ims/list_chats/get_messages/search/refresh |
 
-## 前置 & 启动
+## 前置 & 启动(Linux)
 ```
 sudo cp deploy/99-imc-ptrace.conf /etc/sysctl.d/ && sudo sysctl --system   # 一次
 deploy/install.sh --build --register-mcp                                    # 部署(不自动开机启动)
 # 开机常驻(确认后): loginctl enable-linger $USER && systemctl --user enable --now imc-wechat imc-dingtalk
 ```
 各客户端需登录运行(数据在其内存/文件)。详见 docs/reverse-*.md。
+
+## 跨平台(Windows)
+进程内存访问层已抽象为跨平台(`common::mem`):Linux 走 `/proc/<pid>/{maps,mem}`,Windows 走
+`CreateToolhelp32Snapshot` + `VirtualQueryEx` + `ReadProcessMemory`(`#[cfg]` 分发,见 `src/common/src/lib.rs`)。
+其余(SQLCipher 解密 / SQLite 叶子页解析 / 存储 / MCP)本就跨平台。
+
+Windows 构建与运行:
+```
+# 需 Rust + MSVC 生成工具(VS Build Tools 的 C++ 工作负载; rusqlite bundled 要编 C)
+cd src && cargo build --release          # 产物 src\target\release\imc-*.exe
+# 需提权: 读取其他进程内存要管理员 / SeDebugPrivilege(相当于 Linux 的 ptrace_scope=0)
+imc-wechat.exe collect
+imc-dingtalk.exe collect
+```
+平台差异(进程名/路径,已在代码中按 `#[cfg]` 处理):
+- 进程定位:Linux 匹配 cmdline(钉钉 `com.alibabainc.dingtalk`、微信 `wechat`);
+  Windows 匹配映像名(`DingTalk.exe`;微信 4.0 `Weixin.exe`,3.x `WeChat.exe`)。
+- 数据目录 / 微信库目录:`home()` 在 Windows 回退 `USERPROFILE`;数据默认 `~/.local/share/im-collector`,
+  可用 `IMC_DATA` 覆盖(建议 Windows 设 `%LOCALAPPDATA%\im-collector`)。
+- 微信库布局沿用 `Documents\xwechat_files\<wxid>\db_storage`(与 Linux 4.0 客户端一致)。
+
+> 未在真机验证:Windows 客户端的内存布局 / 密钥字面量格式 / 库文件路径可能与 Linux 版不同,
+> 首次在 Windows 跑需实测核对扫描特征(见 docs/reverse-*.md)。systemd 单元为 Linux 专用;
+> Windows 常驻用「计划任务」或 NSSM 包装服务。
