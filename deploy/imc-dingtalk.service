@@ -4,7 +4,7 @@ After=default.target
 [Service]
 Type=simple
 Environment=IMC_HOME=%h/im-collector
-ExecStart=/bin/bash -lc '%h/im-collector/bin/imc-dingtalk watch --interval 60'
+ExecStart=%h/im-collector/bin/imc-dingtalk watch --interval 60
 Restart=on-failure
 RestartSec=15
 [Install]

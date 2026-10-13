@@ -4,7 +4,7 @@ After=default.target
 [Service]
 Type=simple
 Environment=IMC_HOME=%h/im-collector
-ExecStart=/bin/bash -lc '%h/im-collector/bin/imc-wechat watch --interval 30'
+ExecStart=%h/im-collector/bin/imc-wechat watch --interval 30
 Restart=on-failure
 RestartSec=15
 [Install]
