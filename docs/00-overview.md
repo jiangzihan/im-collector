@@ -33,11 +33,24 @@
 
 ## 前置 & 启动(Linux)
 ```
-sudo cp deploy/99-imc-ptrace.conf /etc/sysctl.d/ && sudo sysctl --system   # 一次
+sudo cp deploy/99-imc-ptrace.conf /etc/sysctl.d/ && sudo sysctl --system   # 一次(取内存需 ptrace_scope=0)
 deploy/install.sh --build --register-mcp                                    # 部署(不自动开机启动)
-# 开机常驻(确认后): loginctl enable-linger $USER && systemctl --user enable --now imc-wechat imc-dingtalk
 ```
 各客户端需登录运行(数据在其内存/文件)。详见 docs/reverse-*.md。
+
+### 统一管理(一条命令): `./imc.sh`
+封装 systemd --user, 一并管理 微信/钉钉/web 三个服务:
+```
+./imc.sh start            # 启动全部(省略服务名=全部; 也可 ./imc.sh start wechat web)
+./imc.sh stop             # 停止全部
+./imc.sh restart          # 重启全部
+./imc.sh status           # 运行/自启概览
+./imc.sh logs dingtalk    # 跟踪某服务日志
+./imc.sh enable           # 开机自启(含 enable-linger)
+./imc.sh disable          # 取消开机自启
+```
+首次或 deploy/*.service 改动后, start/restart/enable/status 会自动把单元重装到
+`~/.config/systemd/user/`(无需单独跑 install.sh 的单元步骤)。
 
 ## 跨平台(Windows)
 进程内存访问层已抽象为跨平台(`common::mem`):Linux 走 `/proc/<pid>/{maps,mem}`,Windows 走
