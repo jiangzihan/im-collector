@@ -92,7 +92,14 @@ deploy/install.sh --build --register-mcp                                    # �
 > 重启电脑后 `ptrace_scope` 归 1, 钉钉采集前需再 `./imc.sh restart dingtalk`(会重新临时放开)。
 
 ## 跨平台(Windows)
-进程内存访问层已抽象为跨平台(`common::mem`):Linux 走 `/proc/<pid>/{maps,mem}`,Windows 走
+**最省事: 直接下预编译 exe(无需装 Rust/MSVC)。** GitHub Actions 在 `windows-latest` 上原生编译,
+到仓库 **Releases** 下载 `im-collector-windows-x64.zip`,解压后客户端登录着跑 `imc.bat collect` 即可。
+- 出版本: 推一个 `v*` 标签(`git tag v0.1.0 && git push origin v0.1.0`),CI 自动编译并发 Release;
+  或在 GitHub 的 **Actions → windows-build → Run workflow** 手动触发(填版本号发 Release,留空则只在该次运行的
+  Artifacts 里下载)。工作流见 `.github/workflows/windows-build.yml`。
+- zip 内含: `bin\imc-*.exe` + `imc.bat` + `web\` + `mcp\` + `docs\`(采集即用; web 需 Python, MCP 需 mcp 包)。
+
+想本地自己编(下方)时才需要 Rust+MSVC。进程内存访问层已抽象为跨平台(`common::mem`):Linux 走 `/proc/<pid>/{maps,mem}`,Windows 走
 `CreateToolhelp32Snapshot` + `VirtualQueryEx` + `ReadProcessMemory`(`#[cfg]` 分发,见 `src/common/src/lib.rs`)。
 其余(SQLCipher 解密 / SQLite 叶子页解析 / 存储 / MCP)本就跨平台。
 
