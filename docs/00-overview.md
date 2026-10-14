@@ -96,14 +96,17 @@ deploy/install.sh --build --register-mcp                                    # �
 `CreateToolhelp32Snapshot` + `VirtualQueryEx` + `ReadProcessMemory`(`#[cfg]` 分发,见 `src/common/src/lib.rs`)。
 其余(SQLCipher 解密 / SQLite 叶子页解析 / 存储 / MCP)本就跨平台。
 
-Windows 构建与运行:
+Windows 构建与运行(用自带的 `build.bat` / `imc.bat`):
 ```
-# 需 Rust + MSVC 生成工具(VS Build Tools 的 C++ 工作负载; rusqlite bundled 要编 C)
-cd src && cargo build --release          # 产物 src\target\release\imc-*.exe
-# 需提权: 读取其他进程内存要管理员 / SeDebugPrivilege(相当于 Linux 的 ptrace_scope=0)
-imc-wechat.exe collect
-imc-dingtalk.exe collect
+:: 前置: 安装 Rust(rustup) + VS Build Tools 勾选"使用 C++ 的桌面开发"(rusqlite bundled 要编 C)
+build.bat                      :: 编译 release 并拷到 bin\(imc-wechat.exe / imc-dingtalk.exe)
+imc.bat collect                :: 采集一次(微信+钉钉; 自动弹 UAC 提权)
+imc.bat collect dingtalk       :: 只采钉钉
+imc.bat watch dingtalk 60      :: 常驻监听(关窗即停)
+imc.bat web                    :: 本地网页 http://127.0.0.1:8899(需 Python)
 ```
+`imc.bat collect/watch` 会自动请求管理员权限(读取其他进程内存 = SeDebugPrivilege,
+相当于 Linux 的 `ptrace_scope=0`)。Windows 无 systemd; 开机自启用「任务计划程序」挂 `imc.bat watch`。
 平台差异(进程名/路径,已在代码中按 `#[cfg]` 处理):
 - 进程定位:Linux 匹配 cmdline(钉钉 `com.alibabainc.dingtalk`、微信 `wechat`);
   Windows 匹配映像名(`DingTalk.exe`;微信 4.0 `Weixin.exe`,3.x `WeChat.exe`)。
