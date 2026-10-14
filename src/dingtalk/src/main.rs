@@ -46,27 +46,6 @@ fn parse_mentions(s:&str, map:&mut std::collections::HashMap<String,String>){
         } else { i+=1; }
     }
 }
-// 解析成员名册 {"nick":"名","uId":"号",...} -> uid->name
-fn parse_roster(s:&str, map:&mut std::collections::HashMap<String,String>){
-    let b=s.as_bytes(); let mut i=0; let mut last=String::new();
-    while i<b.len(){
-        if b[i]==b'"'{
-            let ks=i+1; let mut j=ks; while j<b.len()&&b[j]!=b'"'{j+=1;} if j>=b.len(){break;}
-            let key=&s[ks..j];
-            if j+2<b.len()&&b[j+1]==b':'&&b[j+2]==b'"'{
-                let vs=j+3; let mut k=vs; while k<b.len()&&b[k]!=b'"'{k+=1;}
-                let val=&s[vs..k.min(s.len())];
-                match key {
-                    "nick"|"name"|"userNick"|"remark"|"orgName"|"showName" => { if !val.is_empty(){ last=clean_name(val); } }
-                    "uId"|"uid"|"userId"|"emplId"|"staffId" => { if !val.is_empty() && val.bytes().all(|c|c.is_ascii_digit()) && !last.is_empty(){ map.entry(val.to_string()).or_insert_with(||last.clone()); } }
-                    _=>{}
-                }
-                i=k+1; continue;
-            }
-            i=j+1;
-        } else { i+=1; }
-    }
-}
 // 把正文里的 @<uid> 换成 @<姓名>
 fn rewrite_mentions(content:&str, map:&std::collections::HashMap<String,String>)->String{
     let b=content.as_bytes(); let mut out=String::with_capacity(content.len()); let mut i=0; let mut last=0;
@@ -87,19 +66,62 @@ fn good_content(s:&str)->bool{
     if s.chars().all(|c|c.is_ascii_digit()){return false;}
     cjk(s)>=2 || s.contains("http") || (s.contains(' ') && s.len()>6)
 }
-fn is_cid(t:&str)->bool{
-    !t.is_empty() && t.len()<=40 && (t.bytes().all(|b|b.is_ascii_digit()) || is_cidmsgid(t))
+// 会话id文本: 纯数字(群聊 openConversationId) 或 "uidA:uidB"(单聊)
+fn is_cid_text(t:&str)->bool{
+    let p:Vec<&str>=t.splitn(2,':').collect();
+    match p.len(){
+        1=> (4..=18).contains(&t.len()) && t.bytes().all(|b|b.is_ascii_digit()),
+        2=> !p[0].is_empty()&&!p[1].is_empty()&&p[0].bytes().all(|b|b.is_ascii_digit())&&p[1].bytes().all(|b|b.is_ascii_digit()),
+        _=>false,
+    }
 }
-// tbconversation: [pk INT, cid TEXT, tag INT, type INT, title TEXT, ...] -> (cid,title)
-fn conv_entry(v:&[Val])->Option<(String,String)>{
-    if v.len()<5 { return None; }
-    if !matches!(v[0],Val::Int(_)) { return None; }
-    let cid=match &v[1]{Val::Text(t) if is_cid(t)=>t.clone(),_=>return None};
-    if !matches!(v[3],Val::Int(_)) { return None; }
-    let title=match &v[4]{Val::Text(t)=>t.clone(),_=>return None};
-    let tt=title.trim();
-    if tt.is_empty()||tt.starts_with('{')||tt.starts_with('[')||tt.starts_with("@lA")||tt.starts_with("http")||tt.bytes().all(|b|b.is_ascii_digit()){return None;}
-    Some((cid,title))
+// 把 Val 当作 uid(>=5位数字)取出
+fn as_uid(v:&Val)->String{ match v {
+    Val::Int(i)=>{ let s=i.to_string(); if s.len()>=5 {s} else {String::new()} }
+    Val::Text(t) if t.bytes().all(|b|b.is_ascii_digit()) && t.len()>=5 => t.clone(),
+    _=>String::new(),
+}}
+// 解码 JSON \uXXXX 转义
+fn decode_ju(s:&str)->String{
+    if !s.contains("\\u"){ return s.to_string(); }
+    let b:Vec<char>=s.chars().collect(); let mut out=String::new(); let mut i=0;
+    while i<b.len(){
+        if b[i]=='\\' && i+5<b.len() && b[i+1]=='u' {
+            let hex:String=b[i+2..i+6].iter().collect();
+            if let Ok(cp)=u32::from_str_radix(&hex,16){ if let Some(c)=char::from_u32(cp){ out.push(c); i+=6; continue; } }
+        }
+        out.push(b[i]); i+=1;
+    }
+    out
+}
+fn is_person_name(s:&str)->bool{
+    let n=s.chars().count();
+    if n<1||n>40 {return false;}
+    if s.starts_with('{')||s.starts_with('[')||s.starts_with('@')||s.contains("://"){return false;}
+    if s.bytes().all(|b|b.is_ascii_digit()){return false;}
+    s.chars().any(|c|('\u{4e00}'..='\u{9fff}').contains(&c)||c.is_ascii_alphabetic())
+}
+// 取 JSON 片段里 "key": 之后的值(带引号字符串或裸值), 不含外层引号
+fn json_val(frag:&str, key:&str)->Option<String>{
+    let pat=format!("\"{key}\"");
+    let i=frag.find(&pat)?; let rest=frag[i+pat.len()..].trim_start();
+    let rest=rest.strip_prefix(':')?.trim_start();
+    if let Some(r)=rest.strip_prefix('"'){ let end=r.find('"')?; Some(r[..end].to_string()) }
+    else { let end=rest.find(|c:char| c==','||c=='}').unwrap_or(rest.len()); let v=rest[..end].trim(); if v.is_empty(){None}else{Some(v.to_string())} }
+}
+// 名册 JSON(数组或对象): 按每个 {} 对象内配对 uid<->nick(与字段先后顺序无关)
+fn parse_roster_json(s:&str, map:&mut std::collections::HashMap<String,String>){
+    for frag in s.split('{'){
+        let frag=frag.split('}').next().unwrap_or("");
+        let uid=json_val(frag,"uId").or_else(||json_val(frag,"uid")).or_else(||json_val(frag,"userId"));
+        let nick=json_val(frag,"nick").or_else(||json_val(frag,"name")).or_else(||json_val(frag,"userNick"));
+        if let (Some(uid),Some(nick))=(uid,nick){
+            if uid.bytes().all(|b|b.is_ascii_digit()) && uid.len()>=5 {
+                let nm=clean_name(&decode_ju(&nick));
+                if is_person_name(&nm){ map.entry(uid).or_insert(nm); }
+            }
+        }
+    }
 }
 fn is_cidmsgid(s:&str)->bool{
     let p:Vec<&str>=s.splitn(2,':').collect();
@@ -113,69 +135,83 @@ fn collect()->Result<(),String>{
     let pid=mem::pid_by_cmd(needle).ok_or("钉钉未运行")?;
     let mut recs:Vec<Vec<Val>>=Vec::new();
     mem::for_regions(&pid,|buf|{ leaf::scan(buf,&mut recs); })?;
-    // 构建 cid->群名 映射
-    let mut convmap:std::collections::HashMap<String,String>=std::collections::HashMap::new();
-    let mut s=store::Store::open(&format!("{}/imstore.db",data()))?;
-    let mut uidmap:std::collections::HashMap<String,String>=store::load_names(&s,IM); // 历史累积
-    for v in &recs { for x in v { if let Val::Text(t)=x {
-        if t.contains("\"uId\"")||t.contains("\"nick\"") { parse_roster(t,&mut uidmap); }
-        else if t.starts_with("{\"") && t.contains("\":\"") { parse_mentions(t,&mut uidmap); }
-    } } }
-    for v in &recs { if let Some((cid,title))=conv_entry(v){ convmap.entry(cid).and_modify(|e|{if title.len()>e.len(){*e=title.clone();}}).or_insert(title); } }
     let hi=now_ms_plus_day(); // 时间戳上界: 当前时间+1天(消息不会来自未来)
-    let mut newn=0i64; let mut chats=std::collections::HashSet::new();
-    // 本次扫描内先按 (ts,内容) 去重: 同一条消息常被从内存多处解析出多份(cid 有的解析成功、
-    // 有的为 unknown), 保留解析质量最高的一份(有真实 cid 优先, 其次有发送者), 避免入库重复。
-    struct Cand{ cid:String, suid:String, sender:String, src:String }
-    let qual=|c:&Cand| -> i32 { (if c.cid!="unknown"{2}else{0}) + (if !c.sender.is_empty(){1}else{0}) };
+    let mut s=store::Store::open(&format!("{}/imstore.db",data()))?;
+    // idmap: 统一的 id->名称 表(人名 + 群标题, 都按 id 存, 历史累积)
+    let mut idmap:std::collections::HashMap<String,String>=store::load_names(&s,IM);
+    let mut myid:Option<String>=None;
+    for v in &recs {
+        // NIT 行 [Null, uid, 名称]: 直接的 uid->名字 / cid->群名 表
+        if v.len()==3 { if let Val::Null=v[0] {
+            let uid=as_uid(&v[1]);
+            if let Val::Text(name)=&v[2] {
+                let innum=uid.parse::<i64>().map(|n|n>=LO&&n<=hi).unwrap_or(false); // 排除 uid 实为时间戳
+                if !uid.is_empty() && !innum {
+                    let nm=clean_name(name);
+                    if is_person_name(&nm){ idmap.entry(uid).or_insert(nm); }
+                }
+            }
+        }}
+        for x in v { if let Val::Text(t)=x {
+            if t.contains("\"nick\"")&&(t.contains("\"uId\"")||t.contains("\"uid\"")) { parse_roster_json(t,&mut idmap); }
+            else if t.starts_with("{\"") && t.contains("\":\"") { parse_mentions(t,&mut idmap); } // @提及 {uid:name}
+            if myid.is_none() && t.contains("\"user_id\"") { if let Some(u)=json_val(t,"user_id"){ if u.bytes().all(|b|b.is_ascii_digit())&&u.len()>=5 {myid=Some(u);} } }
+        }}
+    }
+    let mut newn=0i64;
+    let mut chats:std::collections::HashSet<(String,String,i64)>=std::collections::HashSet::new();
+    // 本次扫描内先按 (ts,内容) 去重, 保留解析质量最高一份(有发送者 > 有会话名)
+    struct Cand{ cid:String, suid:String, sender:String, name:String, grp:i64, src:String }
+    let qual=|c:&Cand| -> i32 { (if !c.sender.is_empty(){2}else{0}) + (if c.name!=c.cid {1} else {0}) };
     let mut best:std::collections::HashMap<(i64,String),Cand>=std::collections::HashMap::new();
     for v in &recs {
-        // ts
+        // ts: 落在 [LO,hi] 的 13 位毫秒整数
         let mut ts=None;
         for x in v { if let Val::Int(i)=x { if *i>=LO && *i<=hi { ts=Some(*i); } } }
         let ts=match ts{Some(t)=>t/1000,None=>continue};
-        // content
+        // cid: 第一个"纯数字(群) 或 uidA:uidB(单聊)"文本字段; 记录其位置
+        let mut cid_idx=None; let mut cid=String::new();
+        for (k,x) in v.iter().enumerate(){ if let Val::Text(t)=x { if is_cid_text(t){ cid=t.clone(); cid_idx=Some(k); break; } } }
+        // content: cid 之后第一个合格正文; 回退为全记录里最长合格正文
         let mut content:Option<&str>=None;
-        for x in v { if let Val::Text(t)=x { if good_content(t) { if content.map_or(true,|c|t.len()>c.len()){content=Some(t);} } } }
+        if let Some(ci)=cid_idx { for x in &v[ci+1..] { if let Val::Text(t)=x { if good_content(t){ content=Some(t); break; } } } }
+        if content.is_none() { for x in v { if let Val::Text(t)=x { if good_content(t){ if content.map_or(true,|c|t.len()>c.len()){content=Some(t);} } } } }
         let content=match content{Some(c)=>c,None=>continue};
-        // 数值字段(有序): 找发送者uid
-        let mut nums:Vec<String>=Vec::new();
-        for x in v { match x { Val::Int(n)=>nums.push(n.to_string()), Val::Text(t) if !t.is_empty()&&t.bytes().all(|c|c.is_ascii_digit())=>nums.push(t.clone()), _=>{} } }
-        // cid: 第一个足够大、且不落在毫秒时间戳区间 [LO,hi] 的整数
-        // (否则会把记录里的 ms 时间戳 ~1.79e12 误当成 cid, 产生"时间戳作会话id"的幽灵重复)
-        let mut cid=String::from("unknown");
-        for x in v { if let Val::Int(i)=x { if *i>1_000_000 && (*i<LO || *i>hi) { cid=i.to_string(); break; } } }
-        // 发送者uid: 优先在 uidmap 里、且非cid非13位ts的数值
-        let ts_ms=(ts*1000).to_string();
-        let suid=nums.iter().find(|n| **n!=cid && n.len()!=13 && *n!=&ts_ms && uidmap.contains_key(*n))
-            .or_else(||nums.iter().find(|n| **n!=cid && n.len()>=8 && n.len()!=13 && *n!=&ts_ms))
-            .cloned().unwrap_or_default();
-        let sender=uidmap.get(&suid).cloned().unwrap_or_default();
-        let content=rewrite_mentions(content,&uidmap);
+        // 发送者 uid: cid 紧邻的前一字段; 回退为记录里在 idmap 中的 uid
+        let mut suid=String::new();
+        if let Some(ci)=cid_idx { if ci>=1 { suid=as_uid(&v[ci-1]); } }
+        if suid.is_empty(){ for x in v { let u=as_uid(x); if !u.is_empty() && u!=cid && idmap.contains_key(&u){ suid=u; break; } } }
+        // 会话类型 + 名称: 含':'=单聊(取对方名), 纯数字=群聊(取群标题)
+        let grp = if cid.contains(':'){0}else{1};
+        let name = if grp==0 {
+            let other=cid.split(':').find(|p|Some(*p)!=myid.as_deref()).unwrap_or("");
+            idmap.get(other).cloned().unwrap_or_else(||cid.clone())
+        } else {
+            idmap.get(&cid).cloned().unwrap_or_else(||cid.clone())
+        };
+        let sender=idmap.get(&suid).cloned().unwrap_or_default();
+        let content=rewrite_mentions(content,&idmap);
         // src_id: cid:msgid 文本优先, 否则 ts-hash
         let mut src=format!("{}-{:x}",ts,djb2(&content));
         for x in v { if let Val::Text(t)=x { if is_cidmsgid(t){ src=t.clone(); break; } } }
-        let cand=Cand{cid,suid,sender,src};
+        let cid=if cid.is_empty(){"unknown".into()}else{cid};
+        let cand=Cand{cid,suid,sender,name,grp,src};
         let key=(ts, content);
         match best.get(&key){ Some(old) if qual(old)>=qual(&cand)=>{}, _=>{ best.insert(key,cand); } }
     }
     {
         let tx=s.begin();
         for ((ts,content),c) in &best {
-            let name=convmap.get(&c.cid).cloned().unwrap_or_else(||c.cid.clone());
-            if store::ins_msg_uid(&tx,IM,&c.cid,&name,*ts,&fmt_time(*ts),&c.sender,"文本",content,&c.src,&c.suid){ newn+=1; }
-            chats.insert(c.cid.clone());
+            if store::ins_msg_uid(&tx,IM,&c.cid,&c.name,*ts,&fmt_time(*ts),&c.sender,"文本",content,&c.src,&c.suid){ newn+=1; }
+            chats.insert((c.cid.clone(),c.name.clone(),c.grp));
         }
-        // 持久化 uid->name, 并回填历史空 sender
-        for (uid,nm) in &uidmap { store::save_name(&tx,IM,uid,nm); store::backfill_sender(&tx,IM,uid,nm); }
-        // 回填历史消息的群名 + 更新会话名
-        for (cid,title) in &convmap {
-            let _=tx.execute("UPDATE messages SET chat_name=?3 WHERE im=?1 AND chat_id=?2",rusqlite::params![IM,cid,title]);
+        // 持久化 id->名称(人名+群名), 回填历史空 sender 与会话名
+        for (id,nm) in &idmap {
+            store::save_name(&tx,IM,id,nm);
+            store::backfill_sender(&tx,IM,id,nm);
+            let _=tx.execute("UPDATE messages SET chat_name=?3 WHERE im=?1 AND chat_id=?2 AND (chat_name=?2 OR chat_name='')",rusqlite::params![IM,id,nm]);
         }
-        for c in &chats {
-            let name=convmap.get(c).cloned().unwrap_or_else(||c.clone());
-            store::upsert_chat(&tx,IM,c,&name,1);
-        }
+        for (cid,name,grp) in &chats { store::upsert_chat(&tx,IM,cid,name,*grp); }
         tx.commit().map_err(|e|e.to_string())?;
     }
     let total:i64=s.c.query_row("SELECT count(*) FROM messages WHERE im=?1",rusqlite::params![IM],|r|r.get(0)).unwrap_or(0);
