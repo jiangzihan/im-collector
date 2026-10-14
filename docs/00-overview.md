@@ -103,10 +103,17 @@ build.bat                      :: 编译 release 并拷到 bin\(imc-wechat.exe /
 imc.bat collect                :: 采集一次(微信+钉钉; 自动弹 UAC 提权)
 imc.bat collect dingtalk       :: 只采钉钉
 imc.bat watch dingtalk 60      :: 常驻监听(关窗即停)
-imc.bat web                    :: 本地网页 http://127.0.0.1:8899(需 Python)
+imc.bat web                    :: 本地网页 http://127.0.0.1:8899
+imc.bat mcp                    :: 注册 MCP 到 Claude Code
 ```
 `imc.bat collect/watch` 会自动请求管理员权限(读取其他进程内存 = SeDebugPrivilege,
 相当于 Linux 的 `ptrace_scope=0`)。Windows 无 systemd; 开机自启用「任务计划程序」挂 `imc.bat watch`。
+
+Python 依赖(采集不需要 Python, 以下仅用于可选组件):
+- **web**(`web/serve.py`): 只用 Python 3 **标准库**, 装好 Python 即可, **无需 pip 安装**。
+- **MCP**(`mcp/server.py`): 需要 `mcp` 包。推荐装 [uv](https://docs.astral.sh/uv/), 则 `imc.bat mcp`
+  用 `uv run --with "mcp<2"` 自动按需装并注册; 没有 uv 则先 `pip install mcp` 再手动
+  `claude mcp add im-collector --scope user -- python <repo>\mcp\server.py`。
 平台差异(进程名/路径,已在代码中按 `#[cfg]` 处理):
 - 进程定位:Linux 匹配 cmdline(钉钉 `com.alibabainc.dingtalk`、微信 `wechat`);
   Windows 匹配映像名(`DingTalk.exe`;微信 4.0 `Weixin.exe`,3.x `WeChat.exe`)。

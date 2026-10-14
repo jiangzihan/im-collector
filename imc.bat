@@ -28,6 +28,7 @@ if /i "%CMD%"=="build"   goto :build
 if /i "%CMD%"=="collect" goto :collect
 if /i "%CMD%"=="watch"   goto :watch
 if /i "%CMD%"=="web"     goto :web
+if /i "%CMD%"=="mcp"     goto :mcp
 echo 未知命令: %CMD%
 goto :help
 
@@ -65,8 +66,25 @@ where python >nul 2>&1 && set "PY=python"
 if not defined PY ( where py >nul 2>&1 && set "PY=py" )
 if not defined PY ( echo 需要 Python 3 运行 web/MCP & goto :end )
 set "IMC_WEB_PORT=8899"
-echo 本地 Web: http://127.0.0.1:8899  (Ctrl+C 停止)
+echo 本地 Web: http://127.0.0.1:8899  (Ctrl+C 停止) [仅用 Python 标准库, 无需 pip]
 %PY% "%R%\web\serve.py"
+goto :end
+
+:mcp
+rem 注册 MCP 到 Claude Code。MCP 需要 mcp 包: 有 uv 则自动按需装, 否则需自行 pip install mcp。
+where claude >nul 2>&1
+if errorlevel 1 ( echo 需要 Claude Code CLI(claude^) & goto :end )
+set "HASUV="
+where uv >nul 2>&1 && set "HASUV=1"
+if defined HASUV (
+  echo 用 uv 注册(自动装 mcp 依赖^)...
+  claude mcp add im-collector --scope user -- uv run --with "mcp<2" --directory "%R%\mcp" python "%R%\mcp\server.py"
+) else (
+  echo 未找到 uv。两种办法:
+  echo   A^) 装 uv(推荐^): https://docs.astral.sh/uv/  然后重跑 imc.bat mcp
+  echo   B^) 已 "pip install mcp" 的话手动注册:
+  echo      claude mcp add im-collector --scope user -- python "%R%\mcp\server.py"
+)
 goto :end
 
 :help
@@ -74,8 +92,11 @@ echo im-collector 管理(Windows)
 echo   imc.bat build                 编译并拷到 bin\ (需 Rust + MSVC 生成工具)
 echo   imc.bat collect [wechat^|dingtalk]   采集一次(省略=两者; 需管理员, 会自动提权)
 echo   imc.bat watch   [wechat^|dingtalk] [秒]  常驻监听(默认 dingtalk 60s; 需管理员)
-echo   imc.bat web                   启动本地网页 http://127.0.0.1:8899 (需 Python)
+echo   imc.bat web                   启动本地网页 http://127.0.0.1:8899 (需 Python3, 仅标准库)
+echo   imc.bat mcp                   注册 MCP 到 Claude Code (需 uv 或已 pip install mcp)
 echo.
+echo Python 说明: 采集(collect/watch)是 Rust exe, 不需要 Python;
+echo   web 只用 Python 标准库(无需 pip); MCP 需要 mcp 包(uv 自动装, 或 pip install mcp)。
 echo 前置: 对应客户端已登录运行。钉钉群名/发送者为动态映射, 某会话显示数字 id 时,
 echo       在钉钉打开该会话后再 collect(或网页点"立即采集")即可补全。详见 docs\00-overview.md。
 goto :end
