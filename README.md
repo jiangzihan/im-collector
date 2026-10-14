@@ -3,3 +3,4 @@
 快速(Linux): `sudo sysctl kernel.yama.ptrace_scope=0` → `./build.sh` → `./imc.sh start`(一条命令管理 微信/钉钉/web, 另有 stop/restart/status/logs) → 注册 MCP。
 Windows: 装 Rust + MSVC 生成工具 → `cd src && cargo build --release` → 以管理员运行 `imc-*.exe collect`(进程内存访问层已跨平台,见 docs/00-overview.md「跨平台(Windows)」)。
 数据在 `~/.local/share/im-collector/`(DB/keys/解密库, 敏感, 不在源码树内; 可用 `IMC_DATA` 覆盖)。逆向过程见 docs/reverse-*.md 与 reverse/。
+名称解析: 微信落库即带现成昵称/群名; 钉钉默认只有数字 id, 需动态映射(有映射即入库并回填历史, 无映射先显示 id)。某会话仍显示 id 时, 在钉钉打开该会话 → 网页点「立即采集」即可补全。详见 docs/00-overview.md「名称解析」与「补全钉钉群名/发送者」。

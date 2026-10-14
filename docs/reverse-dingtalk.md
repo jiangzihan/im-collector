@@ -33,8 +33,18 @@
 - 消息表：**`tbmsg_<n>`**（分片消息）、`tbconversation`（会话）、`tblastmsg`。
 - 方法：扫可读内存找 **SQLite 叶子表页（首字节 `0x0D`）** → 解析 cell/record（varint + serial types）→
   取含"13 位毫秒时间戳 + 文本正文"的记录 = 聊天消息。
-- 消息行结构（实测）：`会话id | 发送者id | 正文 | @映射json | flag | flag | flag | ts_ms`。
-- 局限：只得**当前缓存**（近期/活跃会话），非全量历史；cid 未映射群名（`tbconversation` 也在内存，可补映射）。
+- 消息行结构（实测, 叶子记录字段序）：
+  `[∅, 发送者uid(Int), cid(Text), 正文(Text), @映射json(Text), 类型(Int), "1"/"2", 0, ts_ms(Int)]`
+  cid 两种形态：群聊=纯数字 openConversationId；单聊=`uidA:uidB`。据此判会话类型(is_group)。
+- 名称相关结构（与消息分开存, 按 id）：
+  - 会话标题行 `NTTTII = [∅, 群cid(Text), 群名(Text), "", ≈2(Int), ts]`（每群唯一）→ `cid→群名`。
+  - 联系人/成员行 `NIT = [∅, uid, 名字]`、名册 JSON `[{"uId":"..","nick":".."}]`（注意 **uId 在 nick 前**）、
+    @提及 JSON `{"uid":"名(别名)"}` → `uid→人名`。
+  - 账号自身 `login_history_key`/`DTLastUserData` 里 `"user_id"`/`nick` → 当前用户 uid（用于单聊取"对方"）。
+- 名称是**动态映射**：消息默认只有 id，需用上面结构建 `id→名称` 表，落库时写入已映射名并持久化
+  (`names` 表累积)，未映射先按 id 显示，解析出映射后批量回填历史。详见 docs/00-overview.md「名称解析」。
+- 局限：只得**当前缓存**（近期/活跃会话），非全量历史；某会话的标题/成员只在钉钉把它
+  加载进内存时才出现 → 打开该会话再采即可补全映射（见 overview「补全钉钉群名/发送者」）。
 
 ## 5. 复现命令（速查）
 ```
