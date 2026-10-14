@@ -136,11 +136,24 @@ fn collect()->Result<(),String>{
     let mut recs:Vec<Vec<Val>>=Vec::new();
     mem::for_regions(&pid,|buf|{ leaf::scan(buf,&mut recs); })?;
     let hi=now_ms_plus_day(); // 时间戳上界: 当前时间+1天(消息不会来自未来)
+    // 会话标题行: NTTTII = [Null, cid(纯数字群), 标题, "", 小整数(≈2), ts]。每群一条, 非聊天消息。
+    let title_of=|v:&[Val]| -> Option<(String,String)> {
+        if v.len()!=6 { return None; }
+        let (Val::Null, Val::Text(cid), Val::Text(title), Val::Text(_), Val::Int(f4), Val::Int(ts))
+            = (&v[0],&v[1],&v[2],&v[3],&v[4],&v[5]) else { return None; };
+        if cid.len()<5 || !cid.bytes().all(|b|b.is_ascii_digit()) { return None; }
+        if !(0i64..=16).contains(f4) || *ts<LO || *ts>hi { return None; }
+        let t=title.trim();
+        if t.is_empty()||t.starts_with("http")||t.starts_with('@')||t.starts_with('{')||t.chars().count()>40 { return None; }
+        Some((cid.clone(), t.to_string()))
+    };
     let mut s=store::Store::open(&format!("{}/imstore.db",data()))?;
     // idmap: 统一的 id->名称 表(人名 + 群标题, 都按 id 存, 历史累积)
     let mut idmap:std::collections::HashMap<String,String>=store::load_names(&s,IM);
     let mut myid:Option<String>=None;
     for v in &recs {
+        // 会话标题行 -> cid->群名(覆盖式, 优先级高于人名)
+        if let Some((cid,title))=title_of(v){ idmap.insert(cid,title); continue; }
         // NIT 行 [Null, uid, 名称]: 直接的 uid->名字 / cid->群名 表
         if v.len()==3 { if let Val::Null=v[0] {
             let uid=as_uid(&v[1]);
@@ -165,6 +178,7 @@ fn collect()->Result<(),String>{
     let qual=|c:&Cand| -> i32 { (if !c.sender.is_empty(){2}else{0}) + (if c.name!=c.cid {1} else {0}) };
     let mut best:std::collections::HashMap<(i64,String),Cand>=std::collections::HashMap::new();
     for v in &recs {
+        if title_of(v).is_some(){ continue; } // 会话标题行不是聊天消息, 跳过
         // ts: 落在 [LO,hi] 的 13 位毫秒整数
         let mut ts=None;
         for x in v { if let Val::Int(i)=x { if *i>=LO && *i<=hi { ts=Some(*i); } } }
