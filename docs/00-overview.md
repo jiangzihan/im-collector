@@ -111,12 +111,16 @@ Windows 构建与运行(用自带的 `build.bat` / `imc.bat`):
 ```
 :: 前置: 安装 Rust(rustup) + VS Build Tools 勾选"使用 C++ 的桌面开发"(rusqlite bundled 要编 C)
 build.bat                      :: 编译 release 并拷到 bin\(imc-wechat.exe / imc-dingtalk.exe)
-imc.bat collect                :: 采集一次(微信+钉钉; 自动弹 UAC 提权)
-imc.bat collect dingtalk       :: 只采钉钉
-imc.bat watch dingtalk 60      :: 常驻监听(关窗即停)
-imc.bat web                    :: 本地网页 http://127.0.0.1:8899
+imc.bat start                  :: 后台常驻 微信+钉钉+web(各自最小化窗口)
+imc.bat status                 :: 查看各服务运行状态
+imc.bat stop                   :: 停止全部(stop/start/restart 都可带 wechat|dingtalk|web)
+imc.bat collect [wechat^|dingtalk] :: 前台采集一次(默认两者)
+imc.bat watch dingtalk 60      :: 前台常驻监听(关窗即停)
+imc.bat web                    :: 前台网页 http://127.0.0.1:8899
 imc.bat mcp                    :: 注册 MCP 到 Claude Code
 ```
+`start`/`stop`/`restart`/`status` 是 Windows 下的常驻管理(无 systemd, 用后台最小化窗口 +
+`taskkill`/`tasklist` 实现; 开机自启可在「任务计划程序」里挂 `imc.bat start`)。
 读取**同用户**的进程内存在 Windows 上**无需管理员**(钉钉/微信与采集器同用户即可)。
 个别进程若报拒绝访问(如目标以更高权限运行), 右键「以管理员身份运行」该窗口再跑即可。
 Windows 无 systemd; 开机自启用「任务计划程序」挂 `imc.bat watch`。
