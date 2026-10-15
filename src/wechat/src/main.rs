@@ -16,10 +16,24 @@ fn data()->String{
 }
 
 fn find_src()->Option<String>{
-    let base=format!("{}/Documents/xwechat_files",home());
-    for e in std::fs::read_dir(&base).ok()?{
-        let e=e.ok()?; let p=format!("{}/db_storage",e.path().display());
-        if Path::new(&p).is_dir(){return Some(p);}
+    // 候选根目录: IMC_WECHAT_DIR 覆盖 > Documents > OneDrive\Documents > home 下 xwechat_files。
+    // Windows 的"文档"可能被 OneDrive 重定向, 或微信自定义了存储路径, 故多处探测 + 可直接指定。
+    let h=home();
+    let mut bases:Vec<String>=Vec::new();
+    if let Ok(d)=std::env::var("IMC_WECHAT_DIR"){ if !d.is_empty(){ bases.push(d.clone()); bases.push(format!("{d}/xwechat_files")); } }
+    bases.push(format!("{h}/Documents/xwechat_files"));
+    bases.push(format!("{h}/OneDrive/Documents/xwechat_files"));
+    bases.push(format!("{h}/xwechat_files"));
+    for base in &bases {
+        // base 本身可能就是某账号目录(直接含 db_storage)
+        if Path::new(&format!("{base}/db_storage")).is_dir(){ return Some(format!("{base}/db_storage")); }
+        // 否则 base 是 xwechat_files, 遍历其下各账号目录
+        if let Ok(rd)=std::fs::read_dir(base){
+            for e in rd.flatten(){
+                let p=format!("{}/db_storage",e.path().display());
+                if Path::new(&p).is_dir(){ return Some(p); }
+            }
+        }
     }
     None
 }

@@ -117,8 +117,9 @@ imc.bat watch dingtalk 60      :: 常驻监听(关窗即停)
 imc.bat web                    :: 本地网页 http://127.0.0.1:8899
 imc.bat mcp                    :: 注册 MCP 到 Claude Code
 ```
-`imc.bat collect/watch` 会自动请求管理员权限(读取其他进程内存 = SeDebugPrivilege,
-相当于 Linux 的 `ptrace_scope=0`)。Windows 无 systemd; 开机自启用「任务计划程序」挂 `imc.bat watch`。
+读取**同用户**的进程内存在 Windows 上**无需管理员**(钉钉/微信与采集器同用户即可)。
+个别进程若报拒绝访问(如目标以更高权限运行), 右键「以管理员身份运行」该窗口再跑即可。
+Windows 无 systemd; 开机自启用「任务计划程序」挂 `imc.bat watch`。
 
 Python 依赖(采集不需要 Python, 以下仅用于可选组件):
 - **web**(`web/serve.py`): 只用 Python 3 **标准库**, 装好 Python 即可, **无需 pip 安装**。
@@ -130,7 +131,9 @@ Python 依赖(采集不需要 Python, 以下仅用于可选组件):
   Windows 匹配映像名(`DingTalk.exe`;微信 4.0 `Weixin.exe`,3.x `WeChat.exe`)。
 - 数据目录 / 微信库目录:`home()` 在 Windows 回退 `USERPROFILE`;数据默认 `~/.local/share/im-collector`,
   可用 `IMC_DATA` 覆盖(建议 Windows 设 `%LOCALAPPDATA%\im-collector`)。
-- 微信库布局沿用 `Documents\xwechat_files\<wxid>\db_storage`(与 Linux 4.0 客户端一致)。
+- 微信库目录: 默认探测 `Documents\xwechat_files`、`OneDrive\Documents\xwechat_files`、`%USERPROFILE%\xwechat_files`
+  下各账号的 `db_storage`。若微信自定义了存储路径(微信→设置→文件管理 可看到), 用环境变量
+  `IMC_WECHAT_DIR` 指向该 `xwechat_files`(或直接指向含 `db_storage` 的账号目录)。报"找不到 db_storage"即是此处未命中。
 
 > 未在真机验证:Windows 客户端的内存布局 / 密钥字面量格式 / 库文件路径可能与 Linux 版不同,
 > 首次在 Windows 跑需实测核对扫描特征(见 docs/reverse-*.md)。systemd 单元为 Linux 专用;
