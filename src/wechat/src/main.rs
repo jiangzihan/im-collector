@@ -67,20 +67,29 @@ fn keyscan(step:usize)->Result<(),String>{
     let dbp=format!("{}/message/message_0.db",src);
     let mut f=std::fs::File::open(&dbp).map_err(|e|format!("open {dbp}: {e}"))?;
     use std::io::Read; let mut p1=vec![0u8;4096]; f.read_exact(&mut p1).map_err(|e|e.to_string())?;
-    if &p1[..15]==b"SQLite format 3"{ return Err("该库已是明文/未加密".into()); }
-    let pid=wechat_pid().ok_or("微信未运行")?;
-    eprintln!("[wechat] 扫描内存找数据库密钥(step={step}, 多线程, 先私有堆后全部可写), 通常几分钟, Ctrl+C 可中断...");
-    match crypto::find_key_validate(&pid,&p1,step)?{
-        Some(k)=>{
-            let kf=format!("{}/wechat/keys.txt",data());
+    if &p1[..15]==b"SQLite format 3"{ return Err("该库已是明文/未加密, 无需密钥".into()); }
+    // 诊断: 打印库与首页 salt(应为非零随机值; 全零=异常)
+    eprintln!("[wechat] 库: {dbp}");
+    eprintln!("[wechat] 首页 salt(前16字节): {}", hex::encode(&p1[..16]));
+    // 枚举所有微信进程(Linux: cmdline 含 wechat; Windows: 映像名 Weixin/WeChat), 逐个扫描
+    #[cfg(unix)] let needles:&[&str]=&["wechat"];
+    #[cfg(windows)] let needles:&[&str]=&["Weixin","WeChat"];
+    let mut procs:Vec<(String,String,u64)>=Vec::new();
+    for nd in needles { for p in mem::pids_by_cmd(nd){ if !procs.iter().any(|(pid,_,_)|*pid==p.0){ procs.push(p); } } }
+    if procs.is_empty(){ return Err("微信未运行(未找到匹配进程)".into()); }
+    eprintln!("[wechat] 匹配到 {} 个微信进程, 逐个扫描(step={step}, 多线程, 私有堆→全部可写):", procs.len());
+    let kf=format!("{}/wechat/keys.txt",data());
+    for (pid,name,ws_kb) in &procs {
+        eprintln!("[wechat] -> 进程 pid={pid} {name} 内存≈{}MB", ws_kb/1024);
+        if let Some(k)=crypto::find_key_validate(pid,&p1,step)?{
             std::fs::create_dir_all(format!("{}/wechat",data())).ok();
             std::fs::write(&kf, format!("{}\n",hex::encode(k))).ok();
             println!("{}", hex::encode(k));
-            eprintln!("[wechat] 命中密钥, 已写入 {kf} (之后 collect 直接可用)");
-            Ok(())
+            eprintln!("[wechat] 命中密钥(pid={pid}), 已写入 {kf} (之后 collect 直接可用)");
+            return Ok(());
         }
-        None=>Err(format!("未在内存中找到可校验密钥(step={step}, 已扫 私有堆→全部可写)。\n  若 step>1, 可能是密钥未按 {step} 字节对齐: 试 `imc-wechat keyscan 4`(或 2); 都不行再用外部工具。\n  用 PyWxDump/wechat-dump-rs 取到 64hex 后: set IMC_WECHAT_KEY=<64hex> 再 collect。\n  (另确认微信已登录运行; 多账号时扫的是工作集最大的那个进程。)")),
     }
+    Err(format!("在 {} 个微信进程里都没找到可校验密钥(step={step})。\n  排查:\n  1) 上面 salt 若全为 0 或库大小异常, 说明该库未真正加密/未初始化, 换个账号或等微信完全登录。\n  2) step>1 可能未对齐, 试 `imc-wechat keyscan 2`。\n  3) 若确属本机微信版本的密钥格式差异, 用 PyWxDump / wechat-dump-rs 取到 64hex 后: set IMC_WECHAT_KEY=<64hex> 再 collect(最稳)。\n  把上面几行诊断(salt、各进程名与内存)发给作者可进一步定位。", procs.len()))
 }
 
 fn collect()->Result<(),String>{

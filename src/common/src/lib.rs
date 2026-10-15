@@ -181,6 +181,23 @@ pub mod mem {
             }
             if best.1.is_empty(){None}else{Some(best.1)}
         }
+        /// 所有 cmdline 含 needle 的进程: (pid, 进程名, RSS_kb), 按 RSS 降序
+        pub fn pids_by_cmd(needle:&str)->Vec<(String,String,u64)>{
+            let mut v=Vec::new();
+            if let Ok(rd)=std::fs::read_dir("/proc"){
+                for e in rd.flatten(){
+                    let p=e.file_name().into_string().unwrap_or_default();
+                    if !p.chars().all(|c|c.is_ascii_digit()){continue;}
+                    if let Ok(cl)=std::fs::read(format!("/proc/{p}/cmdline")){
+                        if cl.windows(needle.len()).any(|w|w==needle.as_bytes()){
+                            let name=std::fs::read_to_string(format!("/proc/{p}/comm")).unwrap_or_default().trim().to_string();
+                            v.push((p.clone(),name,rss_kb(&p)));
+                        }
+                    }
+                }
+            }
+            v.sort_by(|a,b|b.2.cmp(&a.2)); v
+        }
         fn rss_kb(pid:&str)->u64{
             if let Ok(s)=std::fs::read_to_string(format!("/proc/{pid}/status")){
                 for l in s.lines(){ if let Some(r)=l.strip_prefix("VmRSS:"){ return r.split_whitespace().next().and_then(|x|x.parse().ok()).unwrap_or(0);}}
@@ -256,6 +273,28 @@ pub mod mem {
             }
             if best.1==0{None}else{Some(best.1.to_string())}
         }
+        /// 所有映像名含 needle 的进程: (pid, 进程名, 工作集_kb), 按工作集降序
+        pub fn pids_by_cmd(needle:&str)->Vec<(String,String,u64)>{
+            let needle=needle.to_lowercase(); let mut v=Vec::new();
+            unsafe{
+                if let Ok(snap)=CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS,0){
+                    let mut pe=PROCESSENTRY32W{ dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32, ..Default::default() };
+                    if Process32FirstW(snap,&mut pe).is_ok(){
+                        loop{
+                            let len=pe.szExeFile.iter().position(|&c|c==0).unwrap_or(pe.szExeFile.len());
+                            let name=String::from_utf16_lossy(&pe.szExeFile[..len]);
+                            if name.to_lowercase().contains(&needle){
+                                let ws=(working_set(pe.th32ProcessID)/1024) as u64;
+                                v.push((pe.th32ProcessID.to_string(),name,ws));
+                            }
+                            if Process32NextW(snap,&mut pe).is_err(){break;}
+                        }
+                    }
+                    let _=CloseHandle(snap);
+                }
+            }
+            v.sort_by(|a,b|b.2.cmp(&a.2)); v
+        }
 
         fn working_set(pid:u32)->usize{
             unsafe{
@@ -309,7 +348,7 @@ pub mod mem {
         }
     }
 
-    pub use imp::{pid_by_cmd, for_regions, for_regions_w, for_regions_wp};
+    pub use imp::{pid_by_cmd, pids_by_cmd, for_regions, for_regions_w, for_regions_wp};
 }
 
 // ============ SQLite 叶子页解析(钉钉内存取证) ============
