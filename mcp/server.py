@@ -85,4 +85,16 @@ def refresh(im:str) -> str:
     return (r.stdout+r.stderr).strip()+f"\n{im} 当前 {n} 条。"
 
 if __name__=="__main__":
-    mcp.run()
+    # 传输方式: 默认 stdio(各 agent 自行拉起, 最通用);
+    # 设 IMC_MCP_TRANSPORT=sse|http 则作为常驻服务监听(多 agent 按 URL 共享一个实例)。
+    transport=os.environ.get("IMC_MCP_TRANSPORT","stdio").lower()
+    if transport in ("sse","http","streamable-http"):
+        host=os.environ.get("IMC_MCP_HOST","127.0.0.1")
+        port=int(os.environ.get("IMC_MCP_PORT","8900"))
+        try:
+            mcp.settings.host=host; mcp.settings.port=port
+        except Exception:
+            pass
+        mcp.run(transport="sse" if transport=="sse" else "streamable-http")
+    else:
+        mcp.run()

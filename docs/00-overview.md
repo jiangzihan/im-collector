@@ -56,6 +56,31 @@
 | 钉钉 取口令(可选,gdb) | `reverse/dingtalk/run_gdb.sh` |
 | 统一查询 | 通过 MCP `im-collector`: list_ims/list_chats/get_messages/search/refresh |
 
+## MCP 接入各 agent(Claude Code / Codex / WorkBuddy …)
+MCP 服务(`mcp/server.py`)是通用的,任何支持 MCP 的 agent 都能接。两种接法, 任选其一:
+
+**A. stdio(命令式, 最通用, agent 自行拉起, 无需先 start)** — 把下面加进该 agent 的 MCP 配置:
+```jsonc
+// 通用 mcpServers 结构(<REPO> 换成本仓库绝对路径)
+{ "mcpServers": { "im-collector": {
+  "command": "uv",
+  "args": ["run","--with","mcp<2","--directory","<REPO>/mcp","python","<REPO>/mcp/server.py"]
+} } }
+```
+- Claude Code: `claude mcp add im-collector -- uv run --with 'mcp<2' --directory <REPO>/mcp python <REPO>/mcp/server.py`
+- Codex(`~/.codex/config.toml`): `[mcp_servers.im-collector]` + `command="uv"` + `args=[...]`(同上数组)
+- 没装 uv: 先 `pip install mcp`, 再把 `command/args` 换成 `python <REPO>/mcp/server.py`。
+
+**B. SSE(共享常驻, 多 agent 连同一实例)** — `./imc.sh start`(或 Windows `imc.bat start`)会把 MCP
+以 SSE 跑在 `127.0.0.1:8900`;agent 里配 URL 即可:
+```jsonc
+{ "mcpServers": { "im-collector": { "url": "http://127.0.0.1:8900/sse" } } }
+```
+- Claude Code: `claude mcp add --transport sse im-collector http://127.0.0.1:8900/sse`
+
+> 一键查看(含绝对路径, 可直接复制): `./imc.sh mcp` 或 `imc.bat mcp`。
+> 传输由环境变量控制: `IMC_MCP_TRANSPORT=stdio|sse`(默认 stdio), `IMC_MCP_PORT`(默认 8900)。
+
 ## 前置 & 启动(Linux)
 **免编译下载**: GitHub Actions 产出 x86_64 **musl 静态**二进制(任何 Linux 都能跑, 不挑 glibc),
 到 **Releases** 下载 `im-collector-linux-x64.tar.gz`,解压后 `./imc.sh start`(或 `bin/imc-* collect`)。
@@ -117,8 +142,9 @@ imc.bat stop                   :: 停止全部(stop/start/restart 都可带 wech
 imc.bat collect [wechat^|dingtalk] :: 前台采集一次(默认两者)
 imc.bat watch dingtalk 60      :: 前台常驻监听(关窗即停)
 imc.bat web                    :: 前台网页 http://127.0.0.1:8899
-imc.bat mcp                    :: 注册 MCP 到 Claude Code
+imc.bat mcp                    :: 打印把 MCP 配到各 agent 的配置片段(stdio / SSE)
 ```
+`imc.bat start` 现在也会把 **MCP 以 SSE 常驻 127.0.0.1:8900**(需装 uv); 接入各 agent 见「MCP 接入各 agent」。
 `start`/`stop`/`restart`/`status` 是 Windows 下的常驻管理(无 systemd, 用后台最小化窗口 +
 `taskkill`/`tasklist` 实现; 开机自启可在「任务计划程序」里挂 `imc.bat start`)。
 读取**同用户**的进程内存在 Windows 上**无需管理员**(钉钉/微信与采集器同用户即可)。

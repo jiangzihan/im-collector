@@ -1,21 +1,24 @@
 #!/usr/bin/env bash
-# im-collector 统一管理脚本: 一条命令管理 微信/钉钉/web 三个服务(systemd --user)。
+# im-collector 统一管理脚本: 一条命令管理 微信/钉钉/web/mcp 服务(systemd --user)。
 # 用法:
-#   ./imc.sh start   [wechat|dingtalk|web ...]   # 省略服务名 = 全部
+#   ./imc.sh start   [wechat|dingtalk|web|mcp ...]  # 省略 = 全部(mcp 需装 uv)
 #   ./imc.sh stop    [服务名 ...]
 #   ./imc.sh restart [服务名 ...]
-#   ./imc.sh status                              # 三个服务的运行/自启概览
-#   ./imc.sh logs    [wechat|dingtalk|web] [N]   # 跟踪日志(默认 wechat, 末 N 行默认 80)
+#   ./imc.sh status                              # 运行/自启概览
+#   ./imc.sh logs    [wechat|dingtalk|web|mcp] [N]  # 跟踪日志(默认 wechat)
 #   ./imc.sh enable  [服务名 ...]                # 开机自启(含 enable-linger)
 #   ./imc.sh disable [服务名 ...]                # 取消开机自启
+#   ./imc.sh mcp                                 # 打印把 MCP 配到各 agent 的配置片段
 #   ./imc.sh install                             # 仅从 deploy/ 重装/刷新 systemd 单元
-# 说明: start/restart/enable/status 会在 deploy/*.service 有改动时自动重装单元。
-#       钉钉需钉钉客户端登录运行、微信需微信登录运行, 否则会按 Restart=on-failure 重试。
+# 说明: mcp 服务以 SSE 常驻 127.0.0.1:8900, 供 Claude Code/Codex/WorkBuddy 等按 URL 共享;
+#       也可用 stdio 命令式各 agent 自行拉起(见 ./imc.sh mcp)。
 set -uo pipefail
 
 R="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+UV="$(command -v uv 2>/dev/null || true)"   # mcp 服务用 uv 拉起(自动装 mcp 依赖)
 ALL=(wechat dingtalk web)
+[ -n "$UV" ] && ALL+=(mcp)                   # 有 uv 才纳入 mcp 服务
 UNITS=()
 
 die(){ echo "错误: $*" >&2; exit 1; }
@@ -23,10 +26,10 @@ usage(){ awk 'NR>=2{ if(/^#/){sub(/^# ?/,"");print} else exit }' "$0"; }
 
 have_user_bus(){ systemctl --user show-environment >/dev/null 2>&1; }
 
-render_unit(){ # $1=服务名: deploy/ 里的 %h 换成 $HOME 写入 UNIT_DIR
+render_unit(){ # $1=服务名: deploy/ 里的 %h->$HOME, __UV__->uv 绝对路径, 写入 UNIT_DIR
   local n="$1" src="$R/deploy/imc-$1.service" dst="$UNIT_DIR/imc-$1.service"
   [ -f "$src" ] || die "缺少单元源文件 $src"
-  mkdir -p "$UNIT_DIR"; sed "s#%h#$HOME#g" "$src" > "$dst"
+  mkdir -p "$UNIT_DIR"; sed -e "s#%h#$HOME#g" -e "s#__UV__#${UV}#g" "$src" > "$dst"
 }
 
 ensure_installed(){ # 单元缺失或 deploy 源更新时重新渲染并 daemon-reload
@@ -45,9 +48,39 @@ resolve_units(){ # 服务名 -> UNITS[]; 无参=全部; 未知名报错返回 1
   for a in "${list[@]}"; do
     case "$a" in
       wechat|dingtalk|web) UNITS+=("imc-$a.service");;
-      *) echo "错误: 未知服务 '$a' (可选: ${ALL[*]})" >&2; return 1;;
+      mcp) [ -n "$UV" ] || { echo "错误: mcp 服务需要 uv(未找到)。装 uv 或改用 stdio 命令式(见 ./imc.sh mcp)" >&2; return 1; }
+           UNITS+=("imc-mcp.service");;
+      *) echo "错误: 未知服务 '$a' (可选: wechat dingtalk web mcp)" >&2; return 1;;
     esac
   done
+}
+
+print_mcp_config(){
+  cat <<EOF
+把 im-collector MCP 配到任意 agent(Claude Code / Codex / WorkBuddy 等)。二选一传输:
+
+=== A. stdio(命令式, 最通用; agent 自行拉起, 无需先 start) ===
+通用 mcp.json(很多客户端用这种 "mcpServers" 结构):
+{
+  "mcpServers": {
+    "im-collector": {
+      "command": "uv",
+      "args": ["run","--with","mcp<2","--directory","$R/mcp","python","$R/mcp/server.py"]
+    }
+  }
+}
+Claude Code:  claude mcp add im-collector -- uv run --with "mcp<2" --directory "$R/mcp" python "$R/mcp/server.py"
+Codex(~/.codex/config.toml 追加):
+  [mcp_servers.im-collector]
+  command = "uv"
+  args = ["run","--with","mcp<2","--directory","$R/mcp","python","$R/mcp/server.py"]
+
+=== B. SSE(共享常驻; 先 ./imc.sh start 让 MCP 跑在 127.0.0.1:8900) ===
+URL: http://127.0.0.1:8900/sse
+通用 mcp.json: { "mcpServers": { "im-collector": { "url": "http://127.0.0.1:8900/sse" } } }
+Claude Code:  claude mcp add --transport sse im-collector http://127.0.0.1:8900/sse
+(未装 uv 时 stdio 方式把 "uv run --with mcp<2 --directory X python" 换成已装好 mcp 的 "python"。)
+EOF
 }
 
 in_units(){ local u; for u in "${UNITS[@]}"; do [ "$u" = "$1" ] && return 0; done; return 1; }
@@ -72,6 +105,7 @@ cmd="${1:-}"; shift 2>/dev/null || true
 
 case "$cmd" in
   start|stop|restart|enable|disable|status|logs|install) ;;
+  mcp) print_mcp_config; exit 0;;
   ""|help|-h|--help) usage; exit 0;;
   *) echo "未知命令 '$cmd'" >&2; usage; exit 2;;
 esac
@@ -110,7 +144,7 @@ case "$cmd" in
   logs)
     svc=wechat
     if [ "${1:-}" ]; then
-      case "$1" in wechat|dingtalk|web) svc="$1"; shift;; esac
+      case "$1" in wechat|dingtalk|web|mcp) svc="$1"; shift;; esac
     fi
     exec journalctl --user -u "imc-$svc.service" -n "${1:-80}" -f ;;
   install)

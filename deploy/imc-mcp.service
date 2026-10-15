@@ -1,0 +1,18 @@
+[Unit]
+Description=IM Collector - MCP (SSE 127.0.0.1:8900, multi-agent)
+After=default.target
+[Service]
+Type=simple
+Environment=IMC_HOME=%h/im-collector
+Environment=IMC_MCP_TRANSPORT=sse
+Environment=IMC_MCP_HOST=127.0.0.1
+Environment=IMC_MCP_PORT=8900
+# __UV__ 由 imc.sh 渲染为 uv 的绝对路径; uv 按需装 mcp 依赖后以 SSE 常驻
+ExecStart=__UV__ run --with "mcp<2" --directory %h/im-collector/mcp python %h/im-collector/mcp/server.py
+KillSignal=SIGINT
+# uv/uvicorn 收信号退出码非 0, 视为正常停止(否则 stop 后 status 显示 failed)
+SuccessExitStatus=130 143 SIGINT SIGTERM
+Restart=on-failure
+RestartSec=10
+[Install]
+WantedBy=default.target
