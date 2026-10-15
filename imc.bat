@@ -19,6 +19,7 @@ if /i "%CMD%"=="stop"    goto :stop
 if /i "%CMD%"=="restart" goto :restart
 if /i "%CMD%"=="status"  goto :status
 if /i "%CMD%"=="collect" goto :collect
+if /i "%CMD%"=="keyscan" goto :keyscan
 if /i "%CMD%"=="watch"   goto :watch
 if /i "%CMD%"=="web"     goto :web
 if /i "%CMD%"=="mcp"     goto :mcp
@@ -76,6 +77,15 @@ if /i "%WHO%"=="all" (
 )
 goto :end
 
+:keyscan
+if not exist "%R%\bin\imc-wechat.exe" ( echo bin\ not found, run: imc.bat build & goto :end )
+set "STEP=%~2"
+if "%STEP%"=="" set "STEP=8"
+echo [wechat] keyscan step=%STEP%: scan memory for the DB key, ~minutes, one-time (cached to keys.txt).
+echo          WeChat must be logged in and running. Then collect/watch work automatically.
+"%R%\bin\imc-wechat.exe" keyscan %STEP%
+goto :end
+
 :watch
 if not exist "%R%\bin\imc-dingtalk.exe" ( echo bin\ not found, run: imc.bat build & goto :end )
 set "WHO=%~2"
@@ -131,6 +141,7 @@ echo   imc.bat stop    [wechat^|dingtalk^|web^|mcp] stop ^(default all^)
 echo   imc.bat restart [wechat^|dingtalk^|web^|mcp] restart ^(default all^)
 echo   imc.bat status                       show running state
 echo   imc.bat collect [wechat^|dingtalk]    collect once ^(default both^)
+echo   imc.bat keyscan [step]               WeChat: find DB key from memory ^(one-time, ~minutes^)
 echo   imc.bat watch   [wechat^|dingtalk] [sec]  foreground watch ^(default dingtalk 60s^)
 echo   imc.bat web                          foreground web http://127.0.0.1:8899 ^(needs Python 3^)
 echo   imc.bat mcp                          print MCP config snippets for agents ^(stdio / SSE^)

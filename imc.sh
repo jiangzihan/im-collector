@@ -8,6 +8,7 @@
 #   ./imc.sh logs    [wechat|dingtalk|web|mcp] [N]  # 跟踪日志(默认 wechat)
 #   ./imc.sh enable  [服务名 ...]                # 开机自启(含 enable-linger)
 #   ./imc.sh disable [服务名 ...]                # 取消开机自启
+#   ./imc.sh keyscan [step]                      # 微信: 从内存找数据库密钥(一次性, 约数分钟)
 #   ./imc.sh mcp                                 # 打印把 MCP 配到各 agent 的配置片段
 #   ./imc.sh install                             # 仅从 deploy/ 重装/刷新 systemd 单元
 # 说明: mcp 服务以 SSE 常驻 127.0.0.1:8900, 供 Claude Code/Codex/WorkBuddy 等按 URL 共享;
@@ -106,6 +107,8 @@ cmd="${1:-}"; shift 2>/dev/null || true
 case "$cmd" in
   start|stop|restart|enable|disable|status|logs|install) ;;
   mcp) print_mcp_config; exit 0;;
+  keyscan) [ -x "$R/bin/imc-wechat" ] || die "缺少 $R/bin/imc-wechat(先 ./build.sh)"
+           ensure_ptrace || true; exec "$R/bin/imc-wechat" keyscan "${1:-8}";;
   ""|help|-h|--help) usage; exit 0;;
   *) echo "未知命令 '$cmd'" >&2; usage; exit 2;;
 esac

@@ -69,7 +69,7 @@ fn keyscan(step:usize)->Result<(),String>{
     use std::io::Read; let mut p1=vec![0u8;4096]; f.read_exact(&mut p1).map_err(|e|e.to_string())?;
     if &p1[..15]==b"SQLite format 3"{ return Err("该库已是明文/未加密".into()); }
     let pid=wechat_pid().ok_or("微信未运行")?;
-    eprintln!("[wechat] 深度扫描密钥(step={step}), 可能耗时数分钟, Ctrl+C 可中断...");
+    eprintln!("[wechat] 扫描内存找数据库密钥(step={step}, 多线程/仅私有堆), 约数分钟一次性, Ctrl+C 可中断...");
     match crypto::find_key_validate(&pid,&p1,step)?{
         Some(k)=>{
             let kf=format!("{}/wechat/keys.txt",data());
@@ -97,7 +97,7 @@ fn collect()->Result<(),String>{
     if dec_one(&keys,"message/message_0.db",&mo_out).is_err(){
         keys=get_keys(true)?;
         if let Err(e)=dec_one(&keys,"message/message_0.db",&mo_out){
-            return Err(format!("{e}\n  取不到有效密钥。Windows 微信密钥为原始字节, 不在内存里以 x'..' 字面量出现, 自动扫不到。\n  办法: 1) 用微信v4取密钥工具(PyWxDump / wechat-dump-rs)拿到 64hex, 设 IMC_WECHAT_KEY=<64hex> 再 collect(推荐, 快)\n        2) 或 imc-wechat keyscan (内存逐候选校验, 实验性, 很慢)"));
+            return Err(format!("{e}\n  取不到有效密钥(Windows 微信密钥是原始字节, 不以 x'..' 字面量出现, 普通扫描拿不到)。\n  办法: 1) imc-wechat keyscan   (在内存里自动找密钥并缓存, 一次性约数分钟, 之后 collect/watch 直接可用) —— 推荐, 自带\n        2) 或用 PyWxDump / wechat-dump-rs 取到 64hex 后: set IMC_WECHAT_KEY=<64hex> 再 collect (更快)"));
         }
     }
     let _=dec_one(&keys,"contact/contact.db",&ct_out);

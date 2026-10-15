@@ -153,14 +153,20 @@ imc.bat mcp                    :: 打印把 MCP 配到各 agent 的配置片段(
 ### 微信密钥(Windows 必读)
 钉钉**不需要密钥**(内存取证直接解析), 开箱即用。微信不同: 要先拿到数据库的 32 字节密钥才能解密。
 - **Linux**: 微信以 `x'<hex>'` 字面量把密钥放内存, 采集器自动扫到, 无需手动。
-- **Windows**: 微信 4.0 用**原始字节**设密钥, 内存里没有该字面量, **自动扫不到**(表现为
-  `no key validates ...`)。需手动取得密钥后提供:
-  1. 用成熟的微信 v4 取密钥工具(如开源 PyWxDump / wechat-dump-rs)拿到 64 位十六进制密钥;
-  2. 提供给采集器(二选一):
-     - 环境变量: `set IMC_WECHAT_KEY=<64hex>` 然后 `imc.bat collect wechat`;
-     - 或写入 `%USERPROFILE%\.local\share\im-collector\wechat\keys.txt`(每行一个 64hex)。
-- 实验性自动取密钥: `imc-wechat keyscan [step]`(在可写内存里逐候选校验数据库首页)。**很慢**
-  (微信 Electron 堆很大, step=8 数分钟未必命中, step=1 更全但更慢), 仅作兜底, 优先用上面的直供方式。
+- **Windows**: 微信 4.0 用**原始字节**设密钥, 内存里没有该字面量, 普通扫描拿不到(表现为
+  `no key validates ...`)。取密钥两种办法:
+  1. **自带 keyscan(推荐, 无需外部工具)**: 微信登录运行着, 跑一次
+     ```
+     imc.bat keyscan           :: Windows(step 默认 8)
+     ./imc.sh keyscan          :: Linux
+     ```
+     它在**私有堆内存**里多线程逐候选校验数据库首页, 命中即把密钥写入 `keys.txt`。
+     **一次性, 约数分钟**(堆较大); 之后 `collect`/`watch`/`start` 直接可用, 无需再扫。
+     命中率取决于密钥对齐: 默认 step=8 通常可命中; 没命中可 `keyscan 4` 或 `keyscan 1`(更全更慢)。
+  2. **外部工具直供(更快)**: 用 PyWxDump / wechat-dump-rs 取到 64 位 hex, 然后
+     `set IMC_WECHAT_KEY=<64hex>` 再 collect; 或写入
+     `%USERPROFILE%\.local\share\im-collector\wechat\keys.txt`(每行一个 64hex)。
+  > 密钥是账号固定值, keys.txt 缓存后长期有效(微信重启也不用重扫)。
 Windows 无 systemd; 开机自启用「任务计划程序」挂 `imc.bat watch`。
 
 Python 依赖(采集不需要 Python, 以下仅用于可选组件):
