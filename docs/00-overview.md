@@ -160,9 +160,10 @@ imc.bat mcp                    :: 打印把 MCP 配到各 agent 的配置片段(
      imc.bat keyscan           :: Windows(step 默认 8)
      ./imc.sh keyscan          :: Linux
      ```
-     它在**私有堆内存**里多线程逐候选校验数据库首页, 命中即把密钥写入 `keys.txt`。
-     **一次性, 约数分钟**(堆较大); 之后 `collect`/`watch`/`start` 直接可用, 无需再扫。
-     命中率取决于密钥对齐: 默认 step=8 通常可命中; 没命中可 `keyscan 4` 或 `keyscan 1`(更全更慢)。
+     它在**可写内存**(先私有堆, 没命中再扩到全部可写)里多线程逐候选校验数据库首页, 命中即写入 `keys.txt`,
+     并实时打印"已扫 X MB"进度。**一次性, 通常几分钟**(视堆大小); 之后 `collect`/`watch`/`start` 直接可用。
+     默认 `step=8` 对齐 malloc 的密钥即可命中; 没命中再试 `keyscan 4`(或 `2`)。
+     **不要用 `keyscan 1`**: 慢数十倍、几乎没必要(密钥对齐)。只扫可写内存, 不扫只读/代码大区, 避免跑数小时。
   2. **外部工具直供(更快)**: 用 PyWxDump / wechat-dump-rs 取到 64 位 hex, 然后
      `set IMC_WECHAT_KEY=<64hex>` 再 collect; 或写入
      `%USERPROFILE%\.local\share\im-collector\wechat\keys.txt`(每行一个 64hex)。

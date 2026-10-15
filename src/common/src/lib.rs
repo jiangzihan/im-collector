@@ -121,19 +121,40 @@ pub mod crypto {
         });
     }
     /// 跨平台兜底取密钥: 逐候选校验数据库首页, 命中即真密钥。
-    /// 作用域逐步放宽(先私有可写堆, 再全部可写, 最后全部可读), 以免密钥在被过滤掉的区里。
+    /// 只扫可写内存(密钥在堆里; 不扫只读/代码/映射大区, 否则会慢到数小时)。
+    /// 先私有可写堆(最省), 没命中再扩到全部可写(含可写映射区)。带进度输出。
     pub fn find_key_validate(pid:&str, page1:&[u8], step:usize)->Result<Option<[u8;KEY]>,String>{
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicU64;
+        use std::time::{Duration,Instant};
         let step=step.max(1);
         let nthreads=std::thread::available_parallelism().map(|n|n.get()).unwrap_or(4);
         let found:Mutex<Option<[u8;KEY]>>=Mutex::new(None);
         let stop=AtomicBool::new(false);
+        let scanned=Arc::new(AtomicU64::new(0));
+        let done=Arc::new(AtomicBool::new(false));
+        // 进度线程: 每 ~10s 报已扫 MB
+        let prog={ let scanned=scanned.clone(); let done=done.clone(); let t0=Instant::now();
+            std::thread::spawn(move ||{
+                let mut tick=0u32;
+                while !done.load(Ordering::Relaxed){
+                    std::thread::sleep(Duration::from_millis(500)); tick+=1;
+                    if tick%20==0 {
+                        let mb=scanned.load(Ordering::Relaxed)/(1024*1024);
+                        eprintln!("[wechat] keyscan 进行中: 已扫 {mb} MB, 用时 {}s ...", t0.elapsed().as_secs());
+                    }
+                }
+            }) };
+        let scan=|b:&[u8]|{ scan_buf(b,page1,step,nthreads,&found,&stop); scanned.fetch_add(b.len() as u64,Ordering::Relaxed); };
         let got=||found.lock().unwrap().is_some();
-        // 1) 私有可写堆(最省, 多数命中在此)
-        super::mem::for_regions_wp(pid,|b| scan_buf(b,page1,step,nthreads,&found,&stop))?;
-        // 2) 全部可写(含映射的可写区, 覆盖"密钥不在私有堆"的情况)
-        if !got() { super::mem::for_regions_w(pid,|b| scan_buf(b,page1,step,nthreads,&found,&stop))?; }
-        // 3) 全部可读(最后兜底, 较慢)
-        if !got() { super::mem::for_regions(pid,|b| scan_buf(b,page1,step,nthreads,&found,&stop))?; }
+        eprintln!("[wechat] keyscan [1/2] 扫私有可写堆(step={step}, {nthreads} 线程)...");
+        let r1=super::mem::for_regions_wp(pid,|b| scan(b));
+        if !got() {
+            eprintln!("[wechat] keyscan [2/2] 扩到全部可写内存...");
+            let _=super::mem::for_regions_w(pid,|b| scan(b));
+        }
+        done.store(true,Ordering::Relaxed); let _=prog.join();
+        r1?;
         Ok(found.into_inner().unwrap())
     }
 }

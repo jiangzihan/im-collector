@@ -69,7 +69,7 @@ fn keyscan(step:usize)->Result<(),String>{
     use std::io::Read; let mut p1=vec![0u8;4096]; f.read_exact(&mut p1).map_err(|e|e.to_string())?;
     if &p1[..15]==b"SQLite format 3"{ return Err("该库已是明文/未加密".into()); }
     let pid=wechat_pid().ok_or("微信未运行")?;
-    eprintln!("[wechat] 扫描内存找数据库密钥(step={step}, 多线程/仅私有堆), 约数分钟一次性, Ctrl+C 可中断...");
+    eprintln!("[wechat] 扫描内存找数据库密钥(step={step}, 多线程, 先私有堆后全部可写), 通常几分钟, Ctrl+C 可中断...");
     match crypto::find_key_validate(&pid,&p1,step)?{
         Some(k)=>{
             let kf=format!("{}/wechat/keys.txt",data());
@@ -79,7 +79,7 @@ fn keyscan(step:usize)->Result<(),String>{
             eprintln!("[wechat] 命中密钥, 已写入 {kf} (之后 collect 直接可用)");
             Ok(())
         }
-        None=>Err(format!("未在内存中找到可校验密钥(step={step}, 已扫 私有堆→全部可写→全部可读)。\n  多半是密钥未按 {step} 字节对齐: 用更小步长重试 `imc-wechat keyscan 1`(最全, 较慢)。\n  仍不行可用 PyWxDump/wechat-dump-rs 取到 64hex 后设 IMC_WECHAT_KEY=<64hex>。\n  (另需确认微信已登录运行; 多账号时扫的是工作集最大的那个进程。)")),
+        None=>Err(format!("未在内存中找到可校验密钥(step={step}, 已扫 私有堆→全部可写)。\n  若 step>1, 可能是密钥未按 {step} 字节对齐: 试 `imc-wechat keyscan 4`(或 2); 都不行再用外部工具。\n  用 PyWxDump/wechat-dump-rs 取到 64hex 后: set IMC_WECHAT_KEY=<64hex> 再 collect。\n  (另确认微信已登录运行; 多账号时扫的是工作集最大的那个进程。)")),
     }
 }
 
