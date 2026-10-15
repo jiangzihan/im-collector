@@ -96,6 +96,23 @@ pub mod crypto {
         Ok(out)
     }
     fn is_hex(b:u8)->bool{ b.is_ascii_digit()||(b'a'..=b'f').contains(&b)||(b'A'..=b'F').contains(&b) }
+    /// 跨平台兜底: 在进程内存里按 step 对齐滑窗, 找能通过数据库首页校验的 32 字节原始密钥
+    /// (不依赖 x'..' 字面量; Windows 微信密钥为原始字节时用这个)。step 越小越全越慢(1 最全)。
+    pub fn find_key_validate(pid:&str, page1:&[u8], step:usize)->Result<Option<[u8;KEY]>,String>{
+        let step=step.max(1);
+        let mut found:Option<[u8;KEY]>=None;
+        super::mem::for_regions_w(pid,|buf|{
+            if found.is_some() || buf.len()<KEY { return; }
+            let mut i=0;
+            while i+KEY<=buf.len(){
+                if validate_raw(page1,&buf[i..i+KEY]){
+                    let mut a=[0u8;KEY]; a.copy_from_slice(&buf[i..i+KEY]); found=Some(a); return;
+                }
+                i+=step;
+            }
+        })?;
+        Ok(found)
+    }
 }
 
 // ============ 进程内存(跨平台) ============
@@ -127,13 +144,17 @@ pub mod mem {
             0
         }
         /// 对每个可读内存区调用 f(&buf)
-        pub fn for_regions<F:FnMut(&[u8])>(pid:&str,mut f:F)->Result<(),String>{
+        pub fn for_regions<F:FnMut(&[u8])>(pid:&str,f:F)->Result<(),String>{ for_regions_impl(pid,false,f) }
+        /// 只遍历可写内存区(堆; 找运行时密钥用, 范围小得多)
+        pub fn for_regions_w<F:FnMut(&[u8])>(pid:&str,f:F)->Result<(),String>{ for_regions_impl(pid,true,f) }
+        fn for_regions_impl<F:FnMut(&[u8])>(pid:&str,wonly:bool,mut f:F)->Result<(),String>{
             let maps=std::fs::read_to_string(format!("/proc/{pid}/maps")).map_err(|e|format!("maps: {e}"))?;
             let mf=File::open(format!("/proc/{pid}/mem")).map_err(|e|format!("mem(需 ptrace_scope=0?): {e}"))?;
             for line in maps.lines(){
                 let mut it=line.split_whitespace();
                 let range=match it.next(){Some(r)=>r,None=>continue};
                 let perms=it.next().unwrap_or(""); if !perms.starts_with('r'){continue;}
+                if wonly && perms.as_bytes().get(1)!=Some(&b'w'){continue;}
                 let mut rb=range.split('-');
                 let (a,b)=match(rb.next(),rb.next()){(Some(a),Some(b))=>(a,b),_=>continue};
                 let (s,e)=match(u64::from_str_radix(a,16),u64::from_str_radix(b,16)){(Ok(s),Ok(e)) if e>s=>(s,e),_=>continue};
@@ -194,14 +215,19 @@ pub mod mem {
         }
 
         /// 对每个已提交且可读的内存区调用 f(&buf)
-        pub fn for_regions<F:FnMut(&[u8])>(pid:&str,mut f:F)->Result<(),String>{
+        pub fn for_regions<F:FnMut(&[u8])>(pid:&str,f:F)->Result<(),String>{ for_regions_impl(pid,false,f) }
+        /// 只遍历可写内存区(堆; 找运行时密钥用)
+        pub fn for_regions_w<F:FnMut(&[u8])>(pid:&str,f:F)->Result<(),String>{ for_regions_impl(pid,true,f) }
+        fn for_regions_impl<F:FnMut(&[u8])>(pid:&str,wonly:bool,mut f:F)->Result<(),String>{
             let pid:u32=pid.parse().map_err(|_|"bad pid".to_string())?;
             unsafe{
                 let h:HANDLE=OpenProcess(PROCESS_QUERY_INFORMATION|PROCESS_VM_READ,false,pid)
                     .map_err(|e|format!("OpenProcess(需管理员/SeDebugPrivilege?): {e}"))?;
                 let mut addr:usize=0;
-                let readable_mask=PAGE_READONLY.0|PAGE_READWRITE.0|PAGE_WRITECOPY.0
+                let read_mask=PAGE_READONLY.0|PAGE_READWRITE.0|PAGE_WRITECOPY.0
                     |PAGE_EXECUTE_READ.0|PAGE_EXECUTE_READWRITE.0|PAGE_EXECUTE_WRITECOPY.0;
+                let write_mask=PAGE_READWRITE.0|PAGE_WRITECOPY.0|PAGE_EXECUTE_READWRITE.0|PAGE_EXECUTE_WRITECOPY.0;
+                let mask=if wonly{write_mask}else{read_mask};
                 loop{
                     let mut mbi=MEMORY_BASIC_INFORMATION::default();
                     let got=VirtualQueryEx(h,Some(addr as *const _),&mut mbi,std::mem::size_of::<MEMORY_BASIC_INFORMATION>());
@@ -209,11 +235,11 @@ pub mod mem {
                     let base=mbi.BaseAddress as usize;
                     let size=mbi.RegionSize;
                     let prot=mbi.Protect.0;
-                    let readable=mbi.State==MEM_COMMIT
-                        && (prot&readable_mask)!=0
+                    let ok_region=mbi.State==MEM_COMMIT
+                        && (prot&mask)!=0
                         && (prot&PAGE_GUARD.0)==0
                         && (prot&PAGE_NOACCESS.0)==0;
-                    if readable && size>0 && size<=800*1024*1024 {
+                    if ok_region && size>0 && size<=800*1024*1024 {
                         let mut buf=vec![0u8;size];
                         let mut read:usize=0;
                         let ok=ReadProcessMemory(h,base as *const _,buf.as_mut_ptr() as *mut _,size,Some(&mut read)).is_ok();
@@ -227,7 +253,7 @@ pub mod mem {
         }
     }
 
-    pub use imp::{pid_by_cmd, for_regions};
+    pub use imp::{pid_by_cmd, for_regions, for_regions_w};
 }
 
 // ============ SQLite 叶子页解析(钉钉内存取证) ============

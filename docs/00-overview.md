@@ -123,6 +123,18 @@ imc.bat mcp                    :: 注册 MCP 到 Claude Code
 `taskkill`/`tasklist` 实现; 开机自启可在「任务计划程序」里挂 `imc.bat start`)。
 读取**同用户**的进程内存在 Windows 上**无需管理员**(钉钉/微信与采集器同用户即可)。
 个别进程若报拒绝访问(如目标以更高权限运行), 右键「以管理员身份运行」该窗口再跑即可。
+
+### 微信密钥(Windows 必读)
+钉钉**不需要密钥**(内存取证直接解析), 开箱即用。微信不同: 要先拿到数据库的 32 字节密钥才能解密。
+- **Linux**: 微信以 `x'<hex>'` 字面量把密钥放内存, 采集器自动扫到, 无需手动。
+- **Windows**: 微信 4.0 用**原始字节**设密钥, 内存里没有该字面量, **自动扫不到**(表现为
+  `no key validates ...`)。需手动取得密钥后提供:
+  1. 用成熟的微信 v4 取密钥工具(如开源 PyWxDump / wechat-dump-rs)拿到 64 位十六进制密钥;
+  2. 提供给采集器(二选一):
+     - 环境变量: `set IMC_WECHAT_KEY=<64hex>` 然后 `imc.bat collect wechat`;
+     - 或写入 `%USERPROFILE%\.local\share\im-collector\wechat\keys.txt`(每行一个 64hex)。
+- 实验性自动取密钥: `imc-wechat keyscan [step]`(在可写内存里逐候选校验数据库首页)。**很慢**
+  (微信 Electron 堆很大, step=8 数分钟未必命中, step=1 更全但更慢), 仅作兜底, 优先用上面的直供方式。
 Windows 无 systemd; 开机自启用「任务计划程序」挂 `imc.bat watch`。
 
 Python 依赖(采集不需要 Python, 以下仅用于可选组件):

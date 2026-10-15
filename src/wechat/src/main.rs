@@ -43,15 +43,44 @@ fn wechat_pid()->Option<String>{ mem::pid_by_cmd("wechat") }
 #[cfg(windows)]
 fn wechat_pid()->Option<String>{ mem::pid_by_cmd("Weixin").or_else(||mem::pid_by_cmd("WeChat")) }
 
+// 从字符串解析出若干 64-hex 密钥(空白/逗号分隔)
+fn parse_hex_keys(s:&str)->Vec<Vec<u8>>{
+    s.split(|c:char| c.is_whitespace()||c==',').filter_map(|t|{let t=t.trim(); if t.len()==64 {hex::decode(t).ok()} else {None}}).collect()
+}
 fn get_keys(force:bool)->Result<Vec<Vec<u8>>,String>{
+    // 1) 环境变量直供(Windows 等无法自动扫描时, 用外部工具拿到密钥后设 IMC_WECHAT_KEY=<64hex>)
+    if let Ok(k)=std::env::var("IMC_WECHAT_KEY"){ let v=parse_hex_keys(&k); if !v.is_empty(){return Ok(v);} }
     let kf=format!("{}/wechat/keys.txt",data());
+    // 2) 已保存的 keys.txt(keyscan/历史扫描写入的)
     if !force { if let Ok(k)=crypto::load_keys(&kf){ if !k.is_empty(){return Ok(k);} } }
+    // 3) Linux: 扫内存里的 x'<hex>' 字面量
     let pid=wechat_pid().ok_or("微信未运行")?;
     let keys=crypto::scan_raw_keys(&pid)?;
     std::fs::create_dir_all(format!("{}/wechat",data())).ok();
     let mut s=String::new(); for k in &keys{ s.push_str(&hex::encode(k)); s.push('\n'); }
     std::fs::write(&kf,s).ok();
     Ok(keys.into_iter().map(|a|a.to_vec()).collect())
+}
+// 深度取密钥(跨平台): 读定位到的加密库首页, 在进程内存里逐候选校验, 命中则写入 keys.txt
+fn keyscan(step:usize)->Result<(),String>{
+    let src=find_src().ok_or("找不到 db_storage(可设 IMC_WECHAT_DIR 指向 xwechat_files)")?;
+    let dbp=format!("{}/message/message_0.db",src);
+    let mut f=std::fs::File::open(&dbp).map_err(|e|format!("open {dbp}: {e}"))?;
+    use std::io::Read; let mut p1=vec![0u8;4096]; f.read_exact(&mut p1).map_err(|e|e.to_string())?;
+    if &p1[..15]==b"SQLite format 3"{ return Err("该库已是明文/未加密".into()); }
+    let pid=wechat_pid().ok_or("微信未运行")?;
+    eprintln!("[wechat] 深度扫描密钥(step={step}), 可能耗时数分钟, Ctrl+C 可中断...");
+    match crypto::find_key_validate(&pid,&p1,step)?{
+        Some(k)=>{
+            let kf=format!("{}/wechat/keys.txt",data());
+            std::fs::create_dir_all(format!("{}/wechat",data())).ok();
+            std::fs::write(&kf, format!("{}\n",hex::encode(k))).ok();
+            println!("{}", hex::encode(k));
+            eprintln!("[wechat] 命中密钥, 已写入 {kf} (之后 collect 直接可用)");
+            Ok(())
+        }
+        None=>Err(format!("未在内存中找到可校验密钥(step={step})。可试更小 step(如 1, 更全更慢), 或用外部微信v4取密钥工具拿到后设 IMC_WECHAT_KEY=<64hex>")),
+    }
 }
 
 fn collect()->Result<(),String>{
@@ -66,7 +95,10 @@ fn collect()->Result<(),String>{
     };
     // 解密主库+联系人; 失败则重扫密钥
     if dec_one(&keys,"message/message_0.db",&mo_out).is_err(){
-        keys=get_keys(true)?; dec_one(&keys,"message/message_0.db",&mo_out)?;
+        keys=get_keys(true)?;
+        if let Err(e)=dec_one(&keys,"message/message_0.db",&mo_out){
+            return Err(format!("{e}\n  取不到有效密钥。Windows 微信密钥为原始字节, 不在内存里以 x'..' 字面量出现, 自动扫不到。\n  办法: 1) 用微信v4取密钥工具(PyWxDump / wechat-dump-rs)拿到 64hex, 设 IMC_WECHAT_KEY=<64hex> 再 collect(推荐, 快)\n        2) 或 imc-wechat keyscan (内存逐候选校验, 实验性, 很慢)"));
+        }
     }
     let _=dec_one(&keys,"contact/contact.db",&ct_out);
 
@@ -137,12 +169,14 @@ fn main(){
     let cmd=a.get(1).map(|s|s.as_str()).unwrap_or("help");
     match cmd {
         "keys"=>{ match get_keys(true){Ok(k)=>{for x in &k{println!("{}",hex::encode(x));} eprintln!("{} 把密钥",k.len());},Err(e)=>{eprintln!("{e}");std::process::exit(1);}} }
+        "keyscan"=>{ let step=a.get(2).and_then(|x|x.parse().ok()).unwrap_or(8usize);
+            if let Err(e)=keyscan(step){eprintln!("{e}");std::process::exit(1);} }
         "decrypt"=>{ if a.len()!=5{eprintln!("usage: imc-wechat decrypt <keyfile|hex> <in.db> <out.db>");std::process::exit(2);}
             match crypto::load_keys(&a[2]).and_then(|k|crypto::decrypt_db(&k,&a[3],&a[4])){Ok(_)=>eprintln!("OK {}",a[4]),Err(e)=>{eprintln!("{e}");std::process::exit(1);}} }
         "collect"=>{ if let Err(e)=collect(){eprintln!("collect 失败: {e}");std::process::exit(1);} }
         "watch"=>{ let iv:u64=a.iter().position(|x|x=="--interval").and_then(|i|a.get(i+1)).and_then(|x|x.parse().ok()).unwrap_or(30);
             eprintln!("[wechat] watch 每 {iv}s 采集一次 (Ctrl+C 停止)");
             loop{ if let Err(e)=collect(){eprintln!("[wechat] {e}");} std::thread::sleep(std::time::Duration::from_secs(iv)); } }
-        _=>{ eprintln!("imc-wechat <keys|decrypt|collect|watch [--interval N]>"); std::process::exit(2); }
+        _=>{ eprintln!("imc-wechat <keys|keyscan [step]|decrypt|collect|watch [--interval N]>\n  keyscan: 深度扫描密钥(Windows 等自动取不到时用; step 默认8, 可试1更全)\n  或设 IMC_WECHAT_KEY=<64hex> 直接提供密钥; IMC_WECHAT_DIR 指定库目录"); std::process::exit(2); }
     }
 }
