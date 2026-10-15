@@ -20,7 +20,7 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: 安装 Rust (stable, MSVC)
         uses: dtolnay/rust-toolchain@stable
@@ -47,7 +47,7 @@ jobs:
           Write-Host "打包完成:"; Get-ChildItem dist
 
       - name: 上传构建产物(Artifacts, 手动触发可在本次运行里下载)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: im-collector-windows-x64
           path: |
