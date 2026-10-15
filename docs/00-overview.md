@@ -57,6 +57,10 @@
 | 统一查询 | 通过 MCP `im-collector`: list_ims/list_chats/get_messages/search/refresh |
 
 ## 前置 & 启动(Linux)
+**免编译下载**: GitHub Actions 产出 x86_64 **musl 静态**二进制(任何 Linux 都能跑, 不挑 glibc),
+到 **Releases** 下载 `im-collector-linux-x64.tar.gz`,解压后 `./imc.sh start`(或 `bin/imc-* collect`)。
+出版本: 推一个 `v*` 标签即同时触发 Linux + Windows 两条工作流, 产物都挂到同一个 Release。
+从源码自编:
 ```
 sudo cp deploy/99-imc-ptrace.conf /etc/sysctl.d/ && sudo sysctl --system   # 一次(取内存需 ptrace_scope=0)
 deploy/install.sh --build --register-mcp                                    # 部署(不自动开机启动)
