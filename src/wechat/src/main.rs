@@ -79,7 +79,7 @@ fn keyscan(step:usize)->Result<(),String>{
             eprintln!("[wechat] 命中密钥, 已写入 {kf} (之后 collect 直接可用)");
             Ok(())
         }
-        None=>Err(format!("未在内存中找到可校验密钥(step={step})。可试更小 step(如 1, 更全更慢), 或用外部微信v4取密钥工具拿到后设 IMC_WECHAT_KEY=<64hex>")),
+        None=>Err(format!("未在内存中找到可校验密钥(step={step}, 已扫 私有堆→全部可写→全部可读)。\n  多半是密钥未按 {step} 字节对齐: 用更小步长重试 `imc-wechat keyscan 1`(最全, 较慢)。\n  仍不行可用 PyWxDump/wechat-dump-rs 取到 64hex 后设 IMC_WECHAT_KEY=<64hex>。\n  (另需确认微信已登录运行; 多账号时扫的是工作集最大的那个进程。)")),
     }
 }
 

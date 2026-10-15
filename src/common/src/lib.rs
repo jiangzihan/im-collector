@@ -98,34 +98,42 @@ pub mod crypto {
     fn is_hex(b:u8)->bool{ b.is_ascii_digit()||(b'a'..=b'f').contains(&b)||(b'A'..=b'F').contains(&b) }
     /// 跨平台兜底: 在进程内存里按 step 对齐滑窗, 找能通过数据库首页校验的 32 字节原始密钥
     /// (不依赖 x'..' 字面量; Windows 微信密钥为原始字节时用这个)。step 越小越全越慢(1 最全)。
+    use std::sync::atomic::{AtomicBool,Ordering};
+    use std::sync::Mutex;
+    // 在单个内存区里多线程校验候选 32 字节密钥
+    fn scan_buf(buf:&[u8], page1:&[u8], step:usize, nthreads:usize, found:&Mutex<Option<[u8;KEY]>>, stop:&AtomicBool){
+        if stop.load(Ordering::Relaxed) || buf.len()<KEY { return; }
+        let last=buf.len()-KEY;
+        std::thread::scope(|sc|{
+            for t in 0..nthreads {
+                sc.spawn(move ||{
+                    let mut i=t*step;
+                    while i<=last {
+                        if (i & 0x3ffff)==0 && stop.load(Ordering::Relaxed) { return; }
+                        if validate_raw(page1,&buf[i..i+KEY]){
+                            let mut a=[0u8;KEY]; a.copy_from_slice(&buf[i..i+KEY]);
+                            *found.lock().unwrap()=Some(a); stop.store(true,Ordering::Relaxed); return;
+                        }
+                        i+=step*nthreads;
+                    }
+                });
+            }
+        });
+    }
+    /// 跨平台兜底取密钥: 逐候选校验数据库首页, 命中即真密钥。
+    /// 作用域逐步放宽(先私有可写堆, 再全部可写, 最后全部可读), 以免密钥在被过滤掉的区里。
     pub fn find_key_validate(pid:&str, page1:&[u8], step:usize)->Result<Option<[u8;KEY]>,String>{
-        use std::sync::atomic::{AtomicBool,Ordering};
-        use std::sync::Mutex;
         let step=step.max(1);
         let nthreads=std::thread::available_parallelism().map(|n|n.get()).unwrap_or(4);
         let found:Mutex<Option<[u8;KEY]>>=Mutex::new(None);
         let stop=AtomicBool::new(false);
-        // 只扫"可写 + 私有/匿名"内存(堆; 密钥在此, 排除文件映射的库/字体等), 多线程并行校验
-        super::mem::for_regions_wp(pid,|buf|{
-            if stop.load(Ordering::Relaxed) || buf.len()<KEY { return; }
-            let last=buf.len()-KEY;
-            std::thread::scope(|sc|{
-                for t in 0..nthreads {
-                    let found=&found; let stop=&stop; let buf:&[u8]=buf; let page1:&[u8]=page1;
-                    sc.spawn(move ||{
-                        let mut i=t*step;
-                        while i<=last {
-                            if (i & 0x3ffff)==0 && stop.load(Ordering::Relaxed) { return; }
-                            if validate_raw(page1,&buf[i..i+KEY]){
-                                let mut a=[0u8;KEY]; a.copy_from_slice(&buf[i..i+KEY]);
-                                *found.lock().unwrap()=Some(a); stop.store(true,Ordering::Relaxed); return;
-                            }
-                            i+=step*nthreads;
-                        }
-                    });
-                }
-            });
-        })?;
+        let got=||found.lock().unwrap().is_some();
+        // 1) 私有可写堆(最省, 多数命中在此)
+        super::mem::for_regions_wp(pid,|b| scan_buf(b,page1,step,nthreads,&found,&stop))?;
+        // 2) 全部可写(含映射的可写区, 覆盖"密钥不在私有堆"的情况)
+        if !got() { super::mem::for_regions_w(pid,|b| scan_buf(b,page1,step,nthreads,&found,&stop))?; }
+        // 3) 全部可读(最后兜底, 较慢)
+        if !got() { super::mem::for_regions(pid,|b| scan_buf(b,page1,step,nthreads,&found,&stop))?; }
         Ok(found.into_inner().unwrap())
     }
 }
